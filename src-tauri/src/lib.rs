@@ -31,6 +31,7 @@ pub fn run() {
             commands::list_mappings,
             commands::save_mapping,
             commands::delete_mapping,
+            commands::test_webdav_connection,
             commands::mount_mapping,
             commands::unmount_mapping,
         ])

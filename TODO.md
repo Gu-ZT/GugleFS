@@ -36,12 +36,15 @@
 - [ ] SFTP：实现 known_hosts 校验和首次连接确认流程
 - [x] WebDAV：接入 Rust HTTPS/WebDAV 客户端基础依赖，首个版本仅允许 HTTPS
 - [x] WebDAV：实现 `PROPFIND`、`GET`、`PUT`、`MKCOL`、`MOVE` 和 `DELETE` 基础请求
-- [ ] WebDAV：将运行时凭据接入连接测试和挂载编排
-- [ ] WebDAV：支持 Basic / Digest 认证，评估 Bearer Token 与客户端证书
-- [ ] WebDAV：正确处理 ETag、条件请求、Range 请求和重定向
+- [x] WebDAV：将运行时凭据接入连接测试
+- [ ] WebDAV：将运行时凭据接入挂载编排
+- [x] WebDAV：支持 Basic 认证
+- [ ] WebDAV：支持 Digest，评估 Bearer Token 与客户端证书
+- [ ] WebDAV：正确处理 ETag 和条件请求
+- [x] WebDAV：正确处理 Range 请求和同源重定向
 - [ ] WebDAV：实现 `LOCK` / `UNLOCK` 或明确无锁服务器的并发写入策略
 - [ ] WebDAV：验证 Nextcloud、ownCloud、Apache mod_dav 和常见云存储兼容性
-- [ ] WebDAV：限制跨域重定向时的认证头转发，防止凭据泄漏
+- [x] WebDAV：限制跨域重定向时的认证头转发，防止凭据泄漏
 - [ ] 抽象连接池，避免每个文件操作重复建立连接
 - [ ] 建立可注入的协议测试服务和集成测试
 

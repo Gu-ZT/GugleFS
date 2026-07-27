@@ -5,6 +5,7 @@ use guglefs_core::{
 };
 use quick_xml::{events::Event, Reader};
 use reqwest::{header, Client, Method, RequestBuilder, StatusCode, Url};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct WebDavFileSystem {
@@ -22,13 +23,26 @@ impl WebDavFileSystem {
     ) -> EngineResult<Self> {
         let base_url = Url::parse(base_url.as_ref())
             .map_err(|error| EngineError::InvalidConfig(format!("invalid WebDAV URL: {error}")))?;
-        if base_url.scheme() != "https" {
+        if base_url.scheme() != "https" || base_url.host_str().is_none() {
             return Err(EngineError::InvalidConfig(
-                "WebDAV requires an HTTPS URL".into(),
+                "WebDAV requires an HTTPS URL with a host".into(),
             ));
         }
         let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(5))
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 {
+                    return attempt.stop();
+                }
+                if attempt
+                    .previous()
+                    .last()
+                    .is_some_and(|previous| !same_origin(previous, attempt.url()))
+                {
+                    return attempt.stop();
+                }
+                attempt.follow()
+            }))
             .build()
             .map_err(|error| EngineError::Internal(format!("create WebDAV client: {error}")))?;
         Ok(Self {
@@ -45,8 +59,20 @@ impl WebDavFileSystem {
                 "WebDAV backend requires a WebDAV mapping".into(),
             ));
         }
-        let remote_path = config.remote_path.trim_start_matches('/');
-        let url = format!("https://{}:{}/{}", config.host, config.port, remote_path);
+        let host = config.host.trim();
+        let authority_host = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        };
+        let mut url = Url::parse(&format!("https://{authority_host}:{}/", config.port))
+            .map_err(|error| EngineError::InvalidConfig(format!("invalid WebDAV host: {error}")))?;
+        let remote_path = format!("/{}", config.remote_path.trim_matches('/'));
+        url.set_path(if remote_path == "/" {
+            "/"
+        } else {
+            remote_path.as_str()
+        });
         let username = match &config.auth {
             AuthMethod::Password { .. } => config.username.clone(),
             AuthMethod::Anonymous => None,
@@ -56,7 +82,7 @@ impl WebDavFileSystem {
                 ));
             }
         };
-        Self::new(url, username, password)
+        Self::new(url.as_str(), username, password)
     }
 
     fn endpoint(&self, path: &str) -> Url {
@@ -127,6 +153,18 @@ impl WebDavFileSystem {
             .map_err(|error| EngineError::Remote(format!("read PROPFIND response: {error}")))?;
         parse_propfind(&body)
     }
+
+    async fn put(&self, path: &str, data: Vec<u8>) -> EngineResult<u64> {
+        let length = data.len() as u64;
+        let response = self
+            .request(Method::PUT, path)
+            .body(data)
+            .send()
+            .await
+            .map_err(|error| EngineError::Remote(format!("WebDAV PUT request: {error}")))?;
+        Self::finish(response, "write").await?;
+        Ok(length)
+    }
 }
 
 #[async_trait]
@@ -191,33 +229,69 @@ impl RemoteFileSystem for WebDavFileSystem {
             .send()
             .await
             .map_err(|error| EngineError::Remote(format!("WebDAV GET request: {error}")))?;
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(status_error(status, "GET", &body));
         }
-        response
+        let bytes = response
             .bytes()
             .await
-            .map(|bytes| bytes.to_vec())
-            .map_err(|error| EngineError::Remote(format!("read WebDAV GET response: {error}")))
+            .map_err(|error| EngineError::Remote(format!("read WebDAV GET response: {error}")))?;
+        if status == StatusCode::PARTIAL_CONTENT {
+            return Ok(
+                bytes[..bytes.len().min(usize::try_from(length).map_err(|_| {
+                    EngineError::InvalidConfig("read range does not fit the platform usize".into())
+                })?)]
+                    .to_vec(),
+            );
+        }
+        let start = usize::try_from(offset)
+            .map_err(|_| EngineError::InvalidConfig("read range offset is too large".into()))?;
+        let requested_length = usize::try_from(length)
+            .map_err(|_| EngineError::InvalidConfig("read range length is too large".into()))?;
+        if start >= bytes.len() {
+            return Ok(Vec::new());
+        }
+        Ok(bytes[start..bytes.len().min(start.saturating_add(requested_length))].to_vec())
     }
 
     async fn write(&self, path: &str, offset: u64, data: Vec<u8>) -> EngineResult<u64> {
-        if offset != 0 {
-            return Err(EngineError::NotImplemented(
-                "WebDAV partial writes require a read-modify-write layer".into(),
+        if offset == 0 {
+            return self.put(path, data).await;
+        }
+        let metadata = self.metadata(path).await?;
+        if metadata.kind == EntryKind::Directory {
+            return Err(EngineError::filesystem(
+                FsErrorCode::IsDirectory,
+                format!("cannot write a directory: {path}"),
             ));
         }
-        let length = data.len() as u64;
+        let existing = self.read_range(path, 0, metadata.size).await?;
+        let start = usize::try_from(offset)
+            .map_err(|_| EngineError::InvalidConfig("write offset is too large".into()))?;
+        let end = start
+            .checked_add(data.len())
+            .ok_or_else(|| EngineError::InvalidConfig("write range overflows usize".into()))?;
+        let mut content = existing;
+        if content.len() < end {
+            content.resize(end, 0);
+        }
+        content[start..end].copy_from_slice(&data);
+        let written = data.len() as u64;
+        self.put(path, content).await?;
+        Ok(written)
+    }
+
+    async fn create_file(&self, path: &str) -> EngineResult<()> {
         let response = self
             .request(Method::PUT, path)
-            .body(data)
+            .header("If-None-Match", "*")
+            .body(Vec::new())
             .send()
             .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV PUT request: {error}")))?;
-        Self::finish(response, "write").await?;
-        Ok(length)
+            .map_err(|error| EngineError::Remote(format!("WebDAV create file request: {error}")))?;
+        Self::finish(response, "create file").await
     }
 
     async fn create_dir(&self, path: &str) -> EngineResult<()> {
@@ -358,6 +432,12 @@ fn normalize_path(path: &str) -> String {
     }
 }
 
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
 fn truncate_body(body: &str) -> String {
     const MAX_BODY_LENGTH: usize = 256;
     body.chars().take(MAX_BODY_LENGTH).collect()
@@ -385,6 +465,14 @@ fn status_error(status: StatusCode, operation: &str, body: &str) -> EngineError 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+        task::JoinHandle,
+    };
+
     use super::*;
 
     #[test]
@@ -427,5 +515,124 @@ mod tests {
             Some("/docs/file.txt".into())
         );
         assert_eq!(file_system.vfs_path("/other/file.txt"), None);
+    }
+
+    #[test]
+    fn only_same_origin_redirects_are_allowed() {
+        let origin = Url::parse("https://example.test:443/root").unwrap();
+        let same = Url::parse("https://example.test/root/child").unwrap();
+        let different_host = Url::parse("https://other.test/root").unwrap();
+        let different_scheme = Url::parse("http://example.test/root").unwrap();
+
+        assert!(same_origin(&origin, &same));
+        assert!(!same_origin(&origin, &different_host));
+        assert!(!same_origin(&origin, &different_scheme));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn slices_a_server_response_that_ignores_range() {
+        let (base_url, server, _requests) = spawn_test_server(1, "abcdefghij").await;
+        let file_system = test_file_system(&base_url);
+
+        assert_eq!(
+            file_system.read_range("/file.txt", 2, 4).await.unwrap(),
+            b"cdef"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn performs_read_modify_write_for_nonzero_offsets() {
+        let (base_url, server, requests) = spawn_test_server(3, "hello").await;
+        let file_system = test_file_system(&base_url);
+
+        assert_eq!(
+            file_system
+                .write("/file.txt", 2, b"XY".to_vec())
+                .await
+                .unwrap(),
+            2
+        );
+        server.await.unwrap();
+
+        let requests = requests.lock().unwrap();
+        assert!(String::from_utf8_lossy(&requests[0]).starts_with("PROPFIND /remote/file.txt"));
+        assert!(String::from_utf8_lossy(&requests[1]).starts_with("GET /remote/file.txt"));
+        assert!(String::from_utf8_lossy(&requests[2]).starts_with("PUT /remote/file.txt"));
+        assert!(String::from_utf8_lossy(&requests[2]).ends_with("heXYo"));
+    }
+
+    fn test_file_system(base_url: &str) -> WebDavFileSystem {
+        WebDavFileSystem {
+            client: Client::builder().build().unwrap(),
+            base_url: Url::parse(base_url).unwrap(),
+            username: None,
+            password: None,
+        }
+    }
+
+    async fn spawn_test_server(
+        request_count: usize,
+        get_body: &'static str,
+    ) -> (String, JoinHandle<()>, Arc<Mutex<Vec<Vec<u8>>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured_requests = requests.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..request_count {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut stream).await;
+                let request_text = String::from_utf8_lossy(&request);
+                let method = request_text.split_whitespace().next().unwrap_or_default();
+                let (status, body, content_type) = match method {
+                    "PROPFIND" => (
+                        "207 Multi-Status",
+                        "<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/remote/file.txt</d:href><d:propstat><d:prop><d:getcontentlength>5</d:getcontentlength></d:prop></d:propstat></d:response></d:multistatus>",
+                        "application/xml",
+                    ),
+                    "GET" => ("200 OK", get_body, "text/plain"),
+                    "PUT" => ("204 No Content", "", "text/plain"),
+                    _ => ("500 Internal Server Error", "unexpected method", "text/plain"),
+                };
+                captured_requests.lock().unwrap().push(request);
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("http://{address}/remote"), server, requests)
+    }
+
+    async fn read_request(stream: &mut TcpStream) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let count = stream.read(&mut buffer).await.unwrap();
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..count]);
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let header_text = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = header_text
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        request
     }
 }

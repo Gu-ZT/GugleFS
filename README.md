@@ -60,7 +60,6 @@ pnpm check
 
 ## 安全边界
 
-`MappingConfig` 只保存 `credential_id`，不保存密码或私钥口令。后续凭据应进入 Windows Credential Manager、macOS Keychain 或
-Linux Secret Service，并由 Rust 引擎读取。
+`MappingConfig` 只保存 `credential_id`，不保存密码或私钥口令。WebDAV 连接测试中的密码只通过本次 IPC 请求传递，不会写入配置或返回值；正式挂载仍需接入 Windows Credential Manager、macOS Keychain 或 Linux Secret Service。
 
 映射配置会保存到 Tauri 的应用配置目录下的 `mappings.json`，文件包含 `schemaVersion`，运行时挂载状态不会写入配置文件。

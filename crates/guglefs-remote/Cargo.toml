@@ -10,3 +10,6 @@ async-trait.workspace = true
 guglefs-core = { path = "../guglefs-core" }
 quick-xml.workspace = true
 reqwest.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }

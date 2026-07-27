@@ -63,6 +63,13 @@ impl MappingConfig {
                 "host cannot be empty".into(),
             ));
         }
+        if self.host.chars().any(|character| {
+            character.is_whitespace() || matches!(character, '/' | '?' | '#' | '@')
+        }) {
+            return Err(crate::EngineError::InvalidConfig(
+                "host contains invalid URL characters".into(),
+            ));
+        }
         if self.port == 0 {
             return Err(crate::EngineError::InvalidConfig(
                 "port must be greater than zero".into(),
@@ -101,12 +108,31 @@ pub struct MappingRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::Protocol;
+    use super::{AuthMethod, MappingConfig, Protocol};
 
     #[test]
     fn protocols_have_expected_default_ports() {
         assert_eq!(Protocol::Ftp.default_port(), 21);
         assert_eq!(Protocol::Sftp.default_port(), 22);
         assert_eq!(Protocol::Webdav.default_port(), 443);
+    }
+
+    #[test]
+    fn rejects_hosts_that_can_change_the_request_authority() {
+        let mut config = MappingConfig {
+            id: "id".into(),
+            name: "name".into(),
+            protocol: Protocol::Webdav,
+            host: "files.example.com".into(),
+            port: 443,
+            username: None,
+            auth: AuthMethod::Anonymous,
+            remote_path: "/".into(),
+            mount_point: "/mnt/files".into(),
+            auto_mount: false,
+        };
+        config.host = "files.example.com@attacker.test".into();
+
+        assert!(config.validate().is_err());
     }
 }

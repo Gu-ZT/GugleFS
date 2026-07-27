@@ -91,7 +91,7 @@ app.innerHTML = `
         </label>
         <label>
           <span>凭据</span>
-          <input value="稍后在系统凭据库中配置" disabled />
+          <input id="password" name="password" type="password" autocomplete="current-password" placeholder="仅用于本次连接测试" />
         </label>
         <label>
           <span>远程路径</span>
@@ -106,8 +106,10 @@ app.innerHTML = `
           <span>应用启动时自动挂载</span>
         </label>
       </div>
+      <div id="dialog-notice" class="notice dialog-notice" role="status" hidden></div>
       <div class="dialog-actions">
         <button id="cancel-dialog" class="secondary" type="button">取消</button>
+        <button id="test-connection" class="secondary" type="button">测试 WebDAV 连接</button>
         <button class="primary" type="submit">保存配置</button>
       </div>
     </form>
@@ -119,6 +121,8 @@ const form = getElement<HTMLFormElement>("mapping-form");
 const list = getElement<HTMLDivElement>("mapping-list");
 const emptyState = getElement<HTMLDivElement>("empty-state");
 const notice = getElement<HTMLDivElement>("notice");
+const dialogNotice = getElement<HTMLDivElement>("dialog-notice");
+const testConnectionButton = getElement<HTMLButtonElement>("test-connection");
 let mappings: MappingRuntime[] = [];
 
 function getElement<T extends HTMLElement>(id: string): T {
@@ -138,8 +142,26 @@ function clearNotice(): void {
   notice.textContent = "";
 }
 
+function showDialogNotice(message: string, kind: "error" | "success" = "error"): void {
+  dialogNotice.textContent = message;
+  dialogNotice.dataset.kind = kind;
+  dialogNotice.hidden = false;
+}
+
+function clearDialogNotice(): void {
+  dialogNotice.hidden = true;
+  dialogNotice.textContent = "";
+}
+
+function updateProtocolControls(): void {
+  const isWebDav = getElement<HTMLSelectElement>("protocol").value === "webdav";
+  getElement<HTMLInputElement>("password").disabled = !isWebDav;
+  testConnectionButton.disabled = !isWebDav;
+}
+
 function openForm(runtime?: MappingRuntime): void {
   form.reset();
+  clearDialogNotice();
   getElement<HTMLInputElement>("mapping-id").value = runtime?.config.id ?? "";
   getElement<HTMLHeadingElement>("dialog-title").textContent = runtime ? "编辑映射" : "添加映射";
   getElement<HTMLInputElement>("name").value = runtime?.config.name ?? "";
@@ -150,6 +172,7 @@ function openForm(runtime?: MappingRuntime): void {
   getElement<HTMLInputElement>("remote-path").value = runtime?.config.remotePath ?? "/";
   getElement<HTMLInputElement>("mount-point").value = runtime?.config.mountPoint ?? "Z:";
   getElement<HTMLInputElement>("auto-mount").checked = runtime?.config.autoMount ?? false;
+  updateProtocolControls();
   dialog.showModal();
 }
 
@@ -160,6 +183,22 @@ function statusLabel(state: MappingState): string {
     mounted: "已挂载",
     error: "异常",
   }[state];
+}
+
+function readMappingConfig(): MappingConfig {
+  const protocol = getElement<HTMLSelectElement>("protocol").value as Protocol;
+  return {
+    id: getElement<HTMLInputElement>("mapping-id").value || crypto.randomUUID(),
+    name: getElement<HTMLInputElement>("name").value.trim(),
+    protocol,
+    host: getElement<HTMLInputElement>("host").value.trim(),
+    port: getElement<HTMLInputElement>("port").valueAsNumber,
+    username: getElement<HTMLInputElement>("username").value.trim() || null,
+    auth: { type: "password", credential_id: null },
+    remotePath: getElement<HTMLInputElement>("remote-path").value.trim(),
+    mountPoint: getElement<HTMLInputElement>("mount-point").value.trim(),
+    autoMount: getElement<HTMLInputElement>("auto-mount").checked,
+  };
 }
 
 function renderMappings(): void {
@@ -237,19 +276,7 @@ async function deleteMapping(id: string): Promise<void> {
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   void (async () => {
-    const protocol = getElement<HTMLSelectElement>("protocol").value as Protocol;
-    const config: MappingConfig = {
-      id: getElement<HTMLInputElement>("mapping-id").value || crypto.randomUUID(),
-      name: getElement<HTMLInputElement>("name").value.trim(),
-      protocol,
-      host: getElement<HTMLInputElement>("host").value.trim(),
-      port: getElement<HTMLInputElement>("port").valueAsNumber,
-      username: getElement<HTMLInputElement>("username").value.trim() || null,
-      auth: { type: "password", credential_id: null },
-      remotePath: getElement<HTMLInputElement>("remote-path").value.trim(),
-      mountPoint: getElement<HTMLInputElement>("mount-point").value.trim(),
-      autoMount: getElement<HTMLInputElement>("auto-mount").checked,
-    };
+    const config = readMappingConfig();
 
     try {
       await invoke<MappingRuntime>("save_mapping", { config });
@@ -257,7 +284,27 @@ form.addEventListener("submit", (event) => {
       await loadMappings();
       showNotice("配置已保存", "success");
     } catch (error) {
-      showNotice(String(error));
+      showDialogNotice(String(error));
+    }
+  })();
+});
+
+testConnectionButton.addEventListener("click", () => {
+  void (async () => {
+    if (!form.reportValidity()) return;
+    testConnectionButton.disabled = true;
+    testConnectionButton.textContent = "测试中...";
+    clearDialogNotice();
+    try {
+      const config = readMappingConfig();
+      const password = getElement<HTMLInputElement>("password").value || null;
+      await invoke("test_webdav_connection", { config, password });
+      showDialogNotice("WebDAV 连接成功", "success");
+    } catch (error) {
+      showDialogNotice(String(error));
+    } finally {
+      testConnectionButton.textContent = "测试 WebDAV 连接";
+      updateProtocolControls();
     }
   })();
 });
@@ -270,11 +317,16 @@ getElement<HTMLSelectElement>("protocol").addEventListener("change", (event) => 
     webdav: 443,
   };
   getElement<HTMLInputElement>("port").value = String(defaultPorts[protocol]);
+  updateProtocolControls();
 });
 getElement<HTMLButtonElement>("new-mapping").addEventListener("click", () => openForm());
 getElement<HTMLButtonElement>("empty-add").addEventListener("click", () => openForm());
 getElement<HTMLButtonElement>("refresh").addEventListener("click", () => void loadMappings());
 getElement<HTMLButtonElement>("close-dialog").addEventListener("click", () => dialog.close());
 getElement<HTMLButtonElement>("cancel-dialog").addEventListener("click", () => dialog.close());
+dialog.addEventListener("close", () => {
+  getElement<HTMLInputElement>("password").value = "";
+  clearDialogNotice();
+});
 
 void loadMappings();

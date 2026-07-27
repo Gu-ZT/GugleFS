@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "dev.guglefs.desktop",
   "build": {
-    "beforeDevCommand": "pnpm web:dev",
+    "beforeDevCommand": "node node_modules/vite/bin/vite.js --host 127.0.0.1",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm web:build",
+    "beforeBuildCommand": "node node_modules/typescript/bin/tsc --noEmit && node node_modules/vite/bin/vite.js build",
     "frontendDist": "../dist"
   },
   "app": {

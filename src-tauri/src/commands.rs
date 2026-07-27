@@ -1,4 +1,5 @@
-use guglefs_core::{EngineError, MappingConfig, MappingRuntime};
+use guglefs_core::{EngineError, MappingConfig, MappingRuntime, Protocol, RemoteFileSystem};
+use guglefs_remote::WebDavFileSystem;
 use tauri::State;
 
 use crate::AppState;
@@ -35,6 +36,28 @@ pub fn delete_mapping(state: State<'_, AppState>, id: String) -> CommandResult<(
     state
         .manager
         .save_to_path(&state.config_path)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn test_webdav_connection(
+    config: MappingConfig,
+    password: Option<String>,
+) -> CommandResult<()> {
+    if config.protocol != Protocol::Webdav {
+        return Err(EngineError::InvalidConfig(
+            "connection testing is currently available for WebDAV only".into(),
+        )
+        .to_string());
+    }
+    config.validate().map_err(|error| error.to_string())?;
+    let remote = WebDavFileSystem::from_config(&config, password.filter(|value| !value.is_empty()))
+        .map_err(|error| error.to_string())?;
+    remote.connect().await.map_err(|error| error.to_string())?;
+    remote
+        .metadata("/")
+        .await
+        .map(|_| ())
         .map_err(|error| error.to_string())
 }
 
