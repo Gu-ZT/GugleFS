@@ -23,6 +23,7 @@
 - [ ] 设计元数据缓存、目录缓存和负缓存策略
 - [ ] 设计分块读写、预读、写回与失败恢复策略
 - [ ] 增加限流、超时、重试和断线重连
+- [x] 定义统一远程文件操作抽象（元数据、目录、范围读写、创建、删除、重命名）
 - [ ] 为核心语义编写与平台无关的测试套件
 
 ## P1：远程协议
@@ -33,8 +34,9 @@
 - [ ] FTP：处理被动模式、UTF-8、时区和不可靠 `LIST` 格式
 - [ ] SFTP：支持密码、私钥和 SSH Agent
 - [ ] SFTP：实现 known_hosts 校验和首次连接确认流程
-- [ ] WebDAV：选型 HTTP/WebDAV 客户端库，首个版本仅允许 HTTPS
-- [ ] WebDAV：实现 `PROPFIND`、`GET`、`PUT`、`MKCOL`、`MOVE` 和 `DELETE`
+- [x] WebDAV：接入 Rust HTTPS/WebDAV 客户端基础依赖，首个版本仅允许 HTTPS
+- [x] WebDAV：实现 `PROPFIND`、`GET`、`PUT`、`MKCOL`、`MOVE` 和 `DELETE` 基础请求
+- [ ] WebDAV：将运行时凭据接入连接测试和挂载编排
 - [ ] WebDAV：支持 Basic / Digest 认证，评估 Bearer Token 与客户端证书
 - [ ] WebDAV：正确处理 ETag、条件请求、Range 请求和重定向
 - [ ] WebDAV：实现 `LOCK` / `UNLOCK` 或明确无锁服务器的并发写入策略

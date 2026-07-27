@@ -8,4 +8,4 @@ pub use error::{EngineError, EngineResult};
 pub use manager::MappingManager;
 pub use model::{AuthMethod, MappingConfig, MappingRuntime, MappingState, Protocol};
 pub use persistence::{ConfigDocument, CONFIG_SCHEMA_VERSION};
-pub use traits::{MountDriver, RemoteFileSystem};
+pub use traits::{DirectoryEntry, EntryKind, FileMetadata, MountDriver, RemoteFileSystem};
