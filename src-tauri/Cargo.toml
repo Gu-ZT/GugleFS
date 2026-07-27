@@ -1,0 +1,21 @@
+[package]
+name = "guglefs-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "guglefs_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+guglefs-core = { path = "../crates/guglefs-core" }
+guglefs-mount = { path = "../crates/guglefs-mount" }
+guglefs-remote = { path = "../crates/guglefs-remote" }
+serde.workspace = true
+tauri = { version = "2", features = [] }
+

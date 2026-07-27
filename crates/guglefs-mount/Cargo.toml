@@ -1,0 +1,11 @@
+[package]
+name = "guglefs-mount"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+guglefs-core = { path = "../guglefs-core" }
+

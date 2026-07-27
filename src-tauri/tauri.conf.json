@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GugleFS",
+  "version": "0.1.0",
+  "identifier": "dev.guglefs.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm web:dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm web:build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "GugleFS",
+        "width": 820,
+        "height": 720,
+        "minWidth": 680,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "Map FTP, SFTP, and WebDAV storage as a local drive",
+    "category": "Utility"
+  }
+}

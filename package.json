@@ -1,0 +1,26 @@
+{
+  "name": "guglefs",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "LGPL-3.0-only",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "web:dev": "vite",
+    "web:build": "tsc --noEmit && vite build",
+    "check": "pnpm web:build && cargo check --workspace"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  },
+  "packageManager": "pnpm@10.0.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
+
