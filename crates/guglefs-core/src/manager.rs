@@ -134,6 +134,7 @@ mod tests {
             remote_path: "/data".into(),
             mount_point: mount_point.into(),
             ftp_tls: false,
+            host_key_fingerprint: Some("SHA256:test".into()),
             auto_mount: false,
         }
     }

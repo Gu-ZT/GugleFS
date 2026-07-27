@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     time::{Duration, Instant},
@@ -12,6 +12,10 @@ use totp_rs::{Algorithm, Secret, TOTP};
 const TOTP_SERVICE: &str = "dev.guglefs.desktop.security";
 const TOTP_ACCOUNT: &str = "startup-totp";
 const MAPPING_SERVICE: &str = "dev.guglefs.desktop.mapping";
+const PRIVATE_KEY_SERVICE: &str = "dev.guglefs.desktop.private-key";
+const PRIVATE_KEY_CHUNK_BYTES: usize = 900;
+const MAX_PRIVATE_KEY_BYTES: usize = 128 * 1024;
+static PRIVATE_KEY_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 const MAX_FAILURES: u8 = 5;
 const LOCKOUT_DURATION: Duration = Duration::from_secs(30);
 
@@ -139,6 +143,109 @@ impl SecurityManager {
         format!("mapping-{mapping_id}")
     }
 
+    pub fn new_private_key_id(mapping_id: &str) -> String {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let counter = PRIVATE_KEY_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!(
+            "private-key-{mapping_id}-{}-{nonce}-{counter}",
+            std::process::id()
+        )
+    }
+
+    pub fn store_mapping_private_key(&self, key_id: &str, private_key: &str) -> Result<(), String> {
+        self.require_unlocked()?;
+        let private_key = private_key.trim();
+        if private_key.is_empty() {
+            return Err("SSH 私钥不能为空".into());
+        }
+        if !private_key.is_ascii() {
+            return Err("SSH 私钥必须是 ASCII PEM/OpenSSH 文本".into());
+        }
+        if private_key.len() > MAX_PRIVATE_KEY_BYTES {
+            return Err("SSH 私钥超过 128 KiB 限制".into());
+        }
+        let chunks: Vec<_> = private_key
+            .as_bytes()
+            .chunks(PRIVATE_KEY_CHUNK_BYTES)
+            .collect();
+        for (index, chunk) in chunks.iter().enumerate() {
+            let value = std::str::from_utf8(chunk)
+                .map_err(|error| format!("分割 SSH 私钥失败: {error}"))?;
+            if let Err(error) = write_secure_value(
+                PRIVATE_KEY_SERVICE,
+                &private_key_chunk_account(key_id, index),
+                value,
+            ) {
+                for cleanup_index in 0..index {
+                    let _ = delete_secure_value(
+                        PRIVATE_KEY_SERVICE,
+                        &private_key_chunk_account(key_id, cleanup_index),
+                    );
+                }
+                return Err(error);
+            }
+        }
+        if let Err(error) = write_secure_value(
+            PRIVATE_KEY_SERVICE,
+            &private_key_manifest_account(key_id),
+            &chunks.len().to_string(),
+        ) {
+            for index in 0..chunks.len() {
+                let _ = delete_secure_value(
+                    PRIVATE_KEY_SERVICE,
+                    &private_key_chunk_account(key_id, index),
+                );
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn mapping_private_key(&self, key_id: &str) -> Result<Option<String>, String> {
+        self.require_unlocked()?;
+        let Some(manifest) =
+            read_secure_value(PRIVATE_KEY_SERVICE, &private_key_manifest_account(key_id))?
+        else {
+            return Ok(None);
+        };
+        let chunk_count: usize = manifest
+            .parse()
+            .map_err(|error| format!("SSH 私钥凭据索引损坏: {error}"))?;
+        if chunk_count == 0 || chunk_count > MAX_PRIVATE_KEY_BYTES.div_ceil(PRIVATE_KEY_CHUNK_BYTES)
+        {
+            return Err("SSH 私钥凭据索引超出有效范围".into());
+        }
+        let mut private_key = String::new();
+        for index in 0..chunk_count {
+            let chunk = read_secure_value(
+                PRIVATE_KEY_SERVICE,
+                &private_key_chunk_account(key_id, index),
+            )?
+            .ok_or_else(|| format!("SSH 私钥凭据缺少第 {} 个分块", index + 1))?;
+            private_key.push_str(&chunk);
+        }
+        Ok(Some(private_key))
+    }
+
+    pub fn delete_mapping_private_key(&self, key_id: &str) -> Result<(), String> {
+        self.require_unlocked()?;
+        let manifest_account = private_key_manifest_account(key_id);
+        let chunk_count = read_secure_value(PRIVATE_KEY_SERVICE, &manifest_account)?
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_default()
+            .min(MAX_PRIVATE_KEY_BYTES.div_ceil(PRIVATE_KEY_CHUNK_BYTES));
+        for index in 0..chunk_count {
+            delete_secure_value(
+                PRIVATE_KEY_SERVICE,
+                &private_key_chunk_account(key_id, index),
+            )?;
+        }
+        delete_secure_value(PRIVATE_KEY_SERVICE, &manifest_account)
+    }
+
     fn verify_code(&self, secret: &str, code: &str) -> Result<(), String> {
         let code = code.trim();
         if code.len() != 6 || !code.bytes().all(|value| value.is_ascii_digit()) {
@@ -183,6 +290,14 @@ impl SecurityManager {
         }
         Ok(())
     }
+}
+
+fn private_key_manifest_account(key_id: &str) -> String {
+    format!("{key_id}-manifest")
+}
+
+fn private_key_chunk_account(key_id: &str, index: usize) -> String {
+    format!("{key_id}-chunk-{index}")
 }
 
 fn totp_from_secret(secret: &str) -> Result<TOTP, String> {
@@ -268,6 +383,14 @@ mod tests {
     }
 
     #[test]
+    fn private_key_ids_are_unique_and_scoped() {
+        let first = SecurityManager::new_private_key_id("example");
+        let second = SecurityManager::new_private_key_id("example");
+        assert!(first.starts_with("private-key-example-"));
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn a_new_security_manager_starts_locked() {
         assert!(SecurityManager::default().require_unlocked().is_err());
     }
@@ -291,5 +414,27 @@ mod tests {
         );
         delete_secure_value(MAPPING_SERVICE, &account).unwrap();
         assert_eq!(read_secure_value(MAPPING_SERVICE, &account).unwrap(), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_credential_manager_round_trips_chunked_private_keys() {
+        let manager = SecurityManager::default();
+        manager.unlocked.store(true, Ordering::Release);
+        let key_id = SecurityManager::new_private_key_id("test");
+        let private_key = format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n-----END OPENSSH PRIVATE KEY-----",
+            "A".repeat(PRIVATE_KEY_CHUNK_BYTES * 3)
+        );
+
+        manager
+            .store_mapping_private_key(&key_id, &private_key)
+            .unwrap();
+        assert_eq!(
+            manager.mapping_private_key(&key_id).unwrap(),
+            Some(private_key)
+        );
+        manager.delete_mapping_private_key(&key_id).unwrap();
+        assert_eq!(manager.mapping_private_key(&key_id).unwrap(), None);
     }
 }

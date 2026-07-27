@@ -1,8 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
 
 type Protocol = "ftp" | "sftp" | "webdav";
 type MappingState = "unmounted" | "mounting" | "mounted" | "error";
+
+type AuthMethod =
+  | { type: "password"; credential_id: string | null }
+  | {
+      type: "private_key";
+      key_path: string | null;
+      key_id: string | null;
+      credential_id: string | null;
+    }
+  | { type: "anonymous" };
 
 interface MappingConfig {
   id: string;
@@ -11,10 +22,11 @@ interface MappingConfig {
   host: string;
   port: number;
   username: string | null;
-  auth: { type: "password"; credential_id: string | null };
+  auth: AuthMethod;
   remotePath: string;
   mountPoint: string;
   ftpTls: boolean;
+  hostKeyFingerprint: string | null;
   autoMount: boolean;
 }
 
@@ -153,9 +165,34 @@ app.innerHTML = `
             <span>用户名</span>
             <input id="username" name="username" autocomplete="username" placeholder="user" />
           </label>
-          <label>
-            <span>密码</span>
+          <label id="sftp-auth-field" class="protocol-field" hidden>
+            <span>认证方式</span>
+            <select id="sftp-auth" name="sftpAuth">
+              <option value="password">密码</option>
+              <option value="private_key">SSH 私钥</option>
+            </select>
+          </label>
+          <label id="credential-field">
+            <span id="credential-label">密码</span>
             <input id="password" name="password" type="password" autocomplete="new-password" placeholder="留空则保留已保存密码" />
+          </label>
+          <label id="key-source-field" class="protocol-field" hidden>
+            <span>私钥来源</span>
+            <select id="key-source" name="keySource">
+              <option value="local">本地文件</option>
+              <option value="pasted">粘贴并安全保存</option>
+            </select>
+          </label>
+          <label id="key-path-field" class="full-width protocol-field" hidden>
+            <span>私钥文件</span>
+            <div class="input-action">
+              <input id="key-path" name="keyPath" readonly placeholder="选择 OpenSSH/PEM 私钥" />
+              <button id="choose-key" class="secondary" type="button">选择</button>
+            </div>
+          </label>
+          <label id="private-key-field" class="full-width protocol-field" hidden>
+            <span>SSH 私钥</span>
+            <textarea id="private-key" name="privateKey" rows="6" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
           </label>
           <label id="ftp-tls-field" class="checkbox-row full-width protocol-field" hidden>
             <input id="ftp-tls" name="ftpTls" type="checkbox" />
@@ -194,7 +231,7 @@ app.innerHTML = `
         </div>
         <div class="form-grid">
           <label class="full-width">
-            <span>密码</span>
+            <span id="mount-credential-label">密码</span>
             <input id="mount-password" type="password" autocomplete="current-password" required />
           </label>
           <label class="checkbox-row full-width">
@@ -230,6 +267,10 @@ const mountForm = getElement<HTMLFormElement>("mount-form");
 const mountNotice = getElement<HTMLDivElement>("mount-notice");
 let mountTargetId: string | null = null;
 let editingCredentialId: string | null = null;
+let editingProtocol: Protocol | null = null;
+let editingAuthType: AuthMethod["type"] | null = null;
+let editingKeyId: string | null = null;
+let trustedHostKeyFingerprint: string | null = null;
 let mappings: MappingRuntime[] = [];
 
 function getElement<T extends HTMLElement>(id: string): T {
@@ -341,7 +382,17 @@ function clearMountDialog(): void {
 
 function updateProtocolControls(): void {
   const protocol = getElement<HTMLSelectElement>("protocol").value as Protocol;
-  getElement<HTMLInputElement>("password").disabled = protocol === "sftp";
+  const sftpAuth = getElement<HTMLSelectElement>("sftp-auth").value as "password" | "private_key";
+  const privateKeyAuth = protocol === "sftp" && sftpAuth === "private_key";
+  const keySource = getElement<HTMLSelectElement>("key-source").value as "local" | "pasted";
+  getElement<HTMLElement>("sftp-auth-field").hidden = protocol !== "sftp";
+  getElement<HTMLElement>("key-source-field").hidden = !privateKeyAuth;
+  getElement<HTMLElement>("key-path-field").hidden = !privateKeyAuth || keySource !== "local";
+  getElement<HTMLElement>("private-key-field").hidden = !privateKeyAuth || keySource !== "pasted";
+  getElement<HTMLSpanElement>("credential-label").textContent = privateKeyAuth ? "私钥口令" : "密码";
+  getElement<HTMLInputElement>("password").placeholder = privateKeyAuth
+    ? "可选；留空则保留已保存口令"
+    : "留空则保留已保存密码";
   getElement<HTMLElement>("ftp-tls-field").hidden = protocol !== "ftp";
   testConnectionButton.textContent = `测试 ${protocol.toUpperCase()} 连接`;
 }
@@ -349,7 +400,15 @@ function updateProtocolControls(): void {
 function openForm(runtime?: MappingRuntime): void {
   form.reset();
   clearElementNotice(dialogNotice);
-  editingCredentialId = runtime?.config.auth.credential_id ?? null;
+  editingProtocol = runtime?.config.protocol ?? null;
+  editingAuthType = runtime?.config.auth.type ?? null;
+  const currentAuth = runtime?.config.auth;
+  const privateKeyConfig = currentAuth?.type === "private_key" ? currentAuth : null;
+  editingCredentialId = currentAuth && "credential_id" in currentAuth
+    ? currentAuth.credential_id
+    : null;
+  editingKeyId = privateKeyConfig?.key_id ?? null;
+  trustedHostKeyFingerprint = runtime?.config.hostKeyFingerprint ?? null;
   getElement<HTMLInputElement>("mapping-id").value = runtime?.config.id ?? "";
   getElement<HTMLHeadingElement>("dialog-title").textContent = runtime ? "编辑映射" : "添加映射";
   getElement<HTMLInputElement>("name").value = runtime?.config.name ?? "";
@@ -360,6 +419,13 @@ function openForm(runtime?: MappingRuntime): void {
   getElement<HTMLInputElement>("remote-path").value = runtime?.config.remotePath ?? "/";
   getElement<HTMLInputElement>("mount-point").value = runtime?.config.mountPoint ?? "Z:";
   getElement<HTMLInputElement>("ftp-tls").checked = runtime?.config.ftpTls ?? false;
+  const privateKeyAuth = privateKeyConfig !== null;
+  getElement<HTMLSelectElement>("sftp-auth").value = privateKeyAuth ? "private_key" : "password";
+  getElement<HTMLSelectElement>("key-source").value = privateKeyConfig?.key_id
+    ? "pasted"
+    : "local";
+  getElement<HTMLInputElement>("key-path").value = privateKeyConfig?.key_path ?? "";
+  getElement<HTMLTextAreaElement>("private-key").value = "";
   getElement<HTMLInputElement>("auto-mount").checked = runtime?.config.autoMount ?? false;
   updateProtocolControls();
   dialog.showModal();
@@ -369,6 +435,8 @@ function openMountDialog(runtime: MappingRuntime): void {
   mountTargetId = runtime.config.id;
   getElement<HTMLParagraphElement>("mount-target").textContent = `${runtime.config.name} → ${runtime.config.mountPoint}`;
   getElement<HTMLInputElement>("mount-password").value = "";
+  getElement<HTMLSpanElement>("mount-credential-label").textContent =
+    runtime.config.auth.type === "private_key" ? "私钥口令" : "密码";
   getElement<HTMLInputElement>("remember-password").checked = true;
   clearElementNotice(mountNotice);
   if (!mountDialog.open) mountDialog.showModal();
@@ -386,6 +454,22 @@ function statusLabel(state: MappingState): string {
 
 function readMappingConfig(): MappingConfig {
   const protocol = getElement<HTMLSelectElement>("protocol").value as Protocol;
+  const sftpAuth = getElement<HTMLSelectElement>("sftp-auth").value as "password" | "private_key";
+  const preserveCredential = protocol === editingProtocol
+    && (protocol !== "sftp" || sftpAuth === editingAuthType);
+  let auth: AuthMethod = {
+    type: "password",
+    credential_id: preserveCredential ? editingCredentialId : null,
+  };
+  if (protocol === "sftp" && sftpAuth === "private_key") {
+    const keySource = getElement<HTMLSelectElement>("key-source").value as "local" | "pasted";
+    auth = {
+      type: "private_key",
+      key_path: keySource === "local" ? getElement<HTMLInputElement>("key-path").value.trim() || null : null,
+      key_id: keySource === "pasted" && editingAuthType === "private_key" ? editingKeyId : null,
+      credential_id: preserveCredential ? editingCredentialId : null,
+    };
+  }
   return {
     id: getElement<HTMLInputElement>("mapping-id").value || crypto.randomUUID(),
     name: getElement<HTMLInputElement>("name").value.trim(),
@@ -393,12 +477,47 @@ function readMappingConfig(): MappingConfig {
     host: getElement<HTMLInputElement>("host").value.trim(),
     port: getElement<HTMLInputElement>("port").valueAsNumber,
     username: getElement<HTMLInputElement>("username").value.trim() || null,
-    auth: { type: "password", credential_id: editingCredentialId },
+    auth,
     remotePath: getElement<HTMLInputElement>("remote-path").value.trim(),
     mountPoint: getElement<HTMLInputElement>("mount-point").value.trim(),
     ftpTls: protocol === "ftp" && getElement<HTMLInputElement>("ftp-tls").checked,
+    hostKeyFingerprint: protocol === "sftp" ? trustedHostKeyFingerprint : null,
     autoMount: getElement<HTMLInputElement>("auto-mount").checked,
   };
+}
+
+async function verifySftpHostKey(config: MappingConfig): Promise<void> {
+  if (config.protocol !== "sftp") return;
+  const fingerprint = await invoke<string>("inspect_sftp_host_key", {
+    host: config.host,
+    port: config.port,
+  });
+  if (fingerprint !== trustedHostKeyFingerprint) {
+    const changed = trustedHostKeyFingerprint !== null;
+    const accepted = window.confirm(
+      changed
+        ? `SSH 服务器主机密钥已变化。\n\n原指纹：${trustedHostKeyFingerprint}\n新指纹：${fingerprint}\n\n只有确认服务器已更换密钥时才继续。`
+        : `确认 SSH 服务器主机密钥指纹：\n\n${fingerprint}`,
+    );
+    if (!accepted) throw new Error("未信任 SSH 服务器主机密钥");
+  }
+  trustedHostKeyFingerprint = fingerprint;
+  config.hostKeyFingerprint = fingerprint;
+}
+
+function privateKeyInput(): string | null {
+  return getElement<HTMLTextAreaElement>("private-key").value.trim() || null;
+}
+
+function hasPersistedAuthentication(config: MappingConfig): boolean {
+  switch (config.auth.type) {
+    case "password":
+      return config.auth.credential_id !== null;
+    case "private_key":
+      return config.auth.key_path !== null || config.auth.key_id !== null;
+    case "anonymous":
+      return true;
+  }
 }
 
 function renderMappings(): void {
@@ -433,8 +552,9 @@ function renderMappings(): void {
     status.textContent = statusLabel(runtime.state);
     if (runtime.lastError) status.title = runtime.lastError;
     const credential = document.createElement("span");
-    credential.className = `credential-state ${config.auth.credential_id ? "credential-stored" : ""}`;
-    credential.textContent = config.auth.credential_id ? "密码已保存" : "未保存密码";
+    const authenticationStored = hasPersistedAuthentication(config);
+    credential.className = `credential-state ${authenticationStored ? "credential-stored" : ""}`;
+    credential.textContent = authenticationStored ? "认证已保存" : "未保存认证";
     destination.append(mountPoint, status, credential);
 
     const actions = document.createElement("div");
@@ -453,7 +573,7 @@ function renderMappings(): void {
     mount.addEventListener("click", () => {
       if (runtime.state === "mounted") {
         void unmountMapping(config.id);
-      } else if (config.auth.credential_id) {
+      } else if (authenticationStored) {
         void mountMapping(config.id, null, false);
       } else {
         openMountDialog(runtime);
@@ -607,13 +727,16 @@ lockButton.addEventListener("click", () => {
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   void (async () => {
+    if (!form.reportValidity()) return;
     const config = readMappingConfig();
     const password = getElement<HTMLInputElement>("password").value || null;
+    const privateKey = privateKeyInput();
     try {
-      await invoke<MappingRuntime>("save_mapping", { config, password });
+      await verifySftpHostKey(config);
+      await invoke<MappingRuntime>("save_mapping", { config, password, privateKey });
       dialog.close();
       await loadMappings();
-      showNotice(password ? "配置和密码已保存" : "配置已保存", "success");
+      showNotice(password || privateKey ? "配置和认证信息已保存" : "配置已保存", "success");
     } catch (error) {
       showDialogNotice(String(error));
     }
@@ -629,7 +752,9 @@ testConnectionButton.addEventListener("click", () => {
     try {
       const config = readMappingConfig();
       const password = getElement<HTMLInputElement>("password").value || null;
-      await invoke("test_remote_connection", { config, password });
+      const privateKey = privateKeyInput();
+      await verifySftpHostKey(config);
+      await invoke("test_remote_connection", { config, password, privateKey });
       showDialogNotice(`${config.protocol.toUpperCase()} 连接成功`, "success");
     } catch (error) {
       showDialogNotice(String(error));
@@ -649,6 +774,21 @@ getElement<HTMLSelectElement>("protocol").addEventListener("change", (event) => 
   getElement<HTMLInputElement>("port").value = String(defaultPorts[protocol]);
   updateProtocolControls();
 });
+getElement<HTMLSelectElement>("sftp-auth").addEventListener("change", updateProtocolControls);
+getElement<HTMLSelectElement>("key-source").addEventListener("change", updateProtocolControls);
+getElement<HTMLButtonElement>("choose-key").addEventListener("click", () => {
+  void open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "SSH private keys", extensions: ["pem", "key"] }],
+  })
+    .then((selected) => {
+      if (typeof selected === "string") {
+        getElement<HTMLInputElement>("key-path").value = selected;
+      }
+    })
+    .catch((error) => showDialogNotice(String(error)));
+});
 getElement<HTMLButtonElement>("new-mapping").addEventListener("click", () => openForm());
 getElement<HTMLButtonElement>("empty-add").addEventListener("click", () => openForm());
 getElement<HTMLButtonElement>("refresh").addEventListener("click", () => void loadMappings());
@@ -656,7 +796,12 @@ getElement<HTMLButtonElement>("close-dialog").addEventListener("click", () => di
 getElement<HTMLButtonElement>("cancel-dialog").addEventListener("click", () => dialog.close());
 dialog.addEventListener("close", () => {
   editingCredentialId = null;
+  editingProtocol = null;
+  editingAuthType = null;
+  editingKeyId = null;
+  trustedHostKeyFingerprint = null;
   getElement<HTMLInputElement>("password").value = "";
+  getElement<HTMLTextAreaElement>("private-key").value = "";
   clearElementNotice(dialogNotice);
 });
 

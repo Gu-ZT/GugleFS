@@ -1,8 +1,8 @@
 use guglefs_core::{
-    AuthMethod, EngineError, MappingConfig, MappingRuntime, MappingState, MountDriver, Protocol,
-    RemoteFileSystem,
+    AuthMethod, ConnectionSecrets, EngineError, MappingConfig, MappingRuntime, MappingState,
+    MountDriver, Protocol, RemoteFileSystem,
 };
-use guglefs_remote::{FtpFileSystem, WebDavFileSystem};
+use guglefs_remote::{inspect_host_key, FtpFileSystem, SftpFileSystem, WebDavFileSystem};
 use serde::Serialize;
 use tauri::State;
 
@@ -99,9 +99,15 @@ pub fn save_mapping(
     state: State<'_, AppState>,
     config: MappingConfig,
     password: Option<String>,
+    private_key: Option<String>,
 ) -> CommandResult<MappingRuntime> {
     state.security.require_unlocked()?;
-    save_mapping_and_credential(&state, config, normalized_password(password))
+    save_mapping_and_credentials(
+        &state,
+        config,
+        normalized_secret(password),
+        normalized_secret(private_key),
+    )
 }
 
 #[tauri::command]
@@ -109,6 +115,7 @@ pub fn delete_mapping(state: State<'_, AppState>, id: String) -> CommandResult<(
     state.security.require_unlocked()?;
     let runtime = state.manager.get(&id).map_err(|error| error.to_string())?;
     let credential_id = credential_id(&runtime.config).map(str::to_string);
+    let key_id = private_key_id(&runtime.config).map(str::to_string);
     state
         .manager
         .remove(&id)
@@ -121,7 +128,23 @@ pub fn delete_mapping(state: State<'_, AppState>, id: String) -> CommandResult<(
     if let Some(credential_id) = credential_id {
         state.security.delete_mapping_password(&credential_id)?;
     }
+    if let Some(key_id) = key_id {
+        state.security.delete_mapping_private_key(&key_id)?;
+    }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn inspect_sftp_host_key(
+    state: State<'_, AppState>,
+    host: String,
+    port: u16,
+) -> CommandResult<String> {
+    state.security.require_unlocked()?;
+    validate_host_and_port(&host, port)?;
+    inspect_host_key(host.trim(), port)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -129,20 +152,24 @@ pub async fn test_remote_connection(
     state: State<'_, AppState>,
     config: MappingConfig,
     password: Option<String>,
+    private_key: Option<String>,
 ) -> CommandResult<()> {
     state.security.require_unlocked()?;
+    let private_key = normalized_secret(private_key);
     config.validate().map_err(|error| error.to_string())?;
-    let password = resolve_password(&state, &config, normalized_password(password))?;
+    let secrets = resolve_secrets(&state, &config, normalized_secret(password), private_key)?;
     let remote: Box<dyn RemoteFileSystem> = match config.protocol {
         Protocol::Ftp => Box::new(
-            FtpFileSystem::from_config(&config, password).map_err(|error| error.to_string())?,
+            FtpFileSystem::from_config(&config, secrets.credential)
+                .map_err(|error| error.to_string())?,
         ),
         Protocol::Webdav => Box::new(
-            WebDavFileSystem::from_config(&config, password).map_err(|error| error.to_string())?,
+            WebDavFileSystem::from_config(&config, secrets.credential)
+                .map_err(|error| error.to_string())?,
         ),
-        Protocol::Sftp => {
-            return Err(EngineError::NotImplemented("SFTP adapter".into()).to_string())
-        }
+        Protocol::Sftp => Box::new(
+            SftpFileSystem::from_config(&config, secrets).map_err(|error| error.to_string())?,
+        ),
     };
     remote.connect().await.map_err(|error| error.to_string())?;
     remote
@@ -161,11 +188,11 @@ pub async fn mount_mapping(
 ) -> CommandResult<MappingRuntime> {
     state.security.require_unlocked()?;
     let _operation = state.mount_operations.lock().await;
-    let password = normalized_password(password);
+    let password = normalized_secret(password);
     if remember {
         if let Some(password) = password.as_deref() {
             let runtime = state.manager.get(&id).map_err(|error| error.to_string())?;
-            save_mapping_and_credential(&state, runtime.config, Some(password.to_string()))?;
+            save_mapping_and_credentials(&state, runtime.config, Some(password.to_string()), None)?;
         }
     }
     let remember_after_mount = password.is_none() || remember;
@@ -185,8 +212,8 @@ pub async fn restore_startup_mappings(
         .map_err(|error| error.to_string())?
         .into_iter()
         .filter(|runtime| {
-            let restore_previous =
-                remembered.contains(&runtime.config.id) && credential_id(&runtime.config).is_some();
+            let restore_previous = remembered.contains(&runtime.config.id)
+                && has_persisted_authentication(&runtime.config);
             (runtime.config.auto_mount || restore_previous)
                 && !matches!(
                     runtime.state,
@@ -250,46 +277,135 @@ pub async fn unmount_mapping(
     }
 }
 
-fn save_mapping_and_credential(
+fn save_mapping_and_credentials(
     state: &AppState,
     mut config: MappingConfig,
-    password: Option<String>,
+    credential: Option<String>,
+    private_key: Option<String>,
 ) -> CommandResult<MappingRuntime> {
     let existing = state.manager.get(&config.id).ok();
-    if let AuthMethod::Password { credential_id } = &mut config.auth {
-        if password.is_some() {
-            *credential_id = Some(SecurityManager::mapping_credential_id(&config.id));
-        } else if credential_id.is_none() {
-            *credential_id = existing.as_ref().and_then(|runtime| {
-                if let AuthMethod::Password { credential_id } = &runtime.config.auth {
-                    credential_id.clone()
-                } else {
-                    None
-                }
-            });
+    let old_credential_id = existing
+        .as_ref()
+        .and_then(|runtime| credential_id(&runtime.config))
+        .map(str::to_string);
+    let old_private_key_id = existing
+        .as_ref()
+        .and_then(|runtime| private_key_id(&runtime.config))
+        .map(str::to_string);
+    let mut stored_private_key_id = None;
+
+    match &mut config.auth {
+        AuthMethod::Password { credential_id } => {
+            if private_key.is_some() {
+                return Err("密码认证不能保存 SSH 私钥".into());
+            }
+            if credential.is_some() {
+                *credential_id = Some(SecurityManager::mapping_credential_id(&config.id));
+            } else if credential_id.is_none() {
+                *credential_id = existing
+                    .as_ref()
+                    .and_then(|runtime| match &runtime.config.auth {
+                        AuthMethod::Password { credential_id } => credential_id.clone(),
+                        _ => None,
+                    });
+            }
         }
-    } else if password.is_some() {
-        return Err("当前认证方式不能保存密码".into());
+        AuthMethod::PrivateKey {
+            key_path,
+            key_id,
+            credential_id,
+        } => {
+            *key_path = key_path
+                .take()
+                .map(|path| path.trim().to_string())
+                .filter(|path| !path.is_empty());
+            if let Some(private_key) = private_key.as_deref() {
+                let new_key_id = SecurityManager::new_private_key_id(&config.id);
+                state
+                    .security
+                    .store_mapping_private_key(&new_key_id, private_key)?;
+                *key_path = None;
+                *key_id = Some(new_key_id.clone());
+                stored_private_key_id = Some(new_key_id);
+            } else if key_path.is_some() {
+                *key_id = None;
+            } else if key_id.is_none() {
+                if let Some(AuthMethod::PrivateKey {
+                    key_path: existing_path,
+                    key_id: existing_key_id,
+                    ..
+                }) = existing.as_ref().map(|runtime| &runtime.config.auth)
+                {
+                    *key_path = existing_path.clone();
+                    *key_id = existing_key_id.clone();
+                }
+            }
+            if credential.is_some() {
+                *credential_id = Some(SecurityManager::mapping_credential_id(&config.id));
+            } else if credential_id.is_none() {
+                *credential_id = existing
+                    .as_ref()
+                    .and_then(|runtime| match &runtime.config.auth {
+                        AuthMethod::PrivateKey { credential_id, .. } => credential_id.clone(),
+                        _ => None,
+                    });
+            }
+        }
+        AuthMethod::Anonymous => {
+            if credential.is_some() || private_key.is_some() {
+                return Err("匿名认证不能保存密码或 SSH 私钥".into());
+            }
+        }
     }
 
-    let runtime = state
-        .manager
-        .upsert(config)
-        .map_err(|error| error.to_string())?;
-    if let Some(password) = password {
+    let runtime = match state.manager.upsert(config) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            if let Some(key_id) = stored_private_key_id.as_deref() {
+                let _ = state.security.delete_mapping_private_key(key_id);
+            }
+            return Err(error.to_string());
+        }
+    };
+    if let Some(credential) = credential {
         let credential_id =
-            credential_id(&runtime.config).ok_or_else(|| "密码配置缺少凭据引用".to_string())?;
+            credential_id(&runtime.config).ok_or_else(|| "配置缺少凭据引用".to_string())?;
         if let Err(error) = state
             .security
-            .store_mapping_password(credential_id, &password)
+            .store_mapping_password(credential_id, &credential)
         {
-            rollback_mapping(state, existing, &runtime.config.id);
+            rollback_mapping(state, existing.clone(), &runtime.config.id);
+            if let Some(key_id) = stored_private_key_id.as_deref() {
+                let _ = state.security.delete_mapping_private_key(key_id);
+            }
             return Err(error);
         }
     }
     if let Err(error) = state.manager.save_to_path(&state.config_path) {
-        rollback_mapping(state, existing, &runtime.config.id);
+        rollback_mapping(state, existing.clone(), &runtime.config.id);
+        if let Some(key_id) = stored_private_key_id.as_deref() {
+            let _ = state.security.delete_mapping_private_key(key_id);
+        }
         return Err(error.to_string());
+    }
+
+    let new_credential_id = credential_id(&runtime.config);
+    if old_credential_id
+        .as_deref()
+        .is_some_and(|old| Some(old) != new_credential_id)
+    {
+        state
+            .security
+            .delete_mapping_password(old_credential_id.as_deref().expect("checked above"))?;
+    }
+    let new_private_key_id = private_key_id(&runtime.config);
+    if old_private_key_id
+        .as_deref()
+        .is_some_and(|old| Some(old) != new_private_key_id)
+    {
+        state
+            .security
+            .delete_mapping_private_key(old_private_key_id.as_deref().expect("checked above"))?;
     }
     Ok(runtime)
 }
@@ -301,19 +417,19 @@ async fn mount_by_id(
     remember_after_mount: bool,
 ) -> CommandResult<MappingRuntime> {
     let current = state.manager.get(id).map_err(|error| error.to_string())?;
-    let password = resolve_password(state, &current.config, supplied_password)?;
+    let secrets = resolve_secrets(state, &current.config, supplied_password, None)?;
     let runtime = state
         .manager
         .begin_mount(id)
         .map_err(|error| error.to_string())?;
-    let result = state.mount_driver.mount(&runtime.config, password).await;
+    let result = state.mount_driver.mount(&runtime.config, secrets).await;
     match result {
         Ok(()) => {
             let runtime = state
                 .manager
                 .finish_mount(id, MappingState::Mounted, None)
                 .map_err(|error| error.to_string())?;
-            if remember_after_mount && credential_id(&runtime.config).is_some() {
+            if remember_after_mount && has_persisted_authentication(&runtime.config) {
                 if let Err(error) = state.mount_state.remember(id) {
                     let _ = state
                         .mount_driver
@@ -339,30 +455,42 @@ async fn mount_by_id(
     }
 }
 
-fn resolve_password(
+fn resolve_secrets(
     state: &AppState,
     config: &MappingConfig,
-    supplied_password: Option<String>,
-) -> CommandResult<Option<String>> {
-    if supplied_password.is_some() {
-        return Ok(supplied_password);
-    }
-    let direct_credential = credential_id(config).map(str::to_string);
-    let credential = direct_credential.or_else(|| {
-        state
-            .manager
-            .get(&config.id)
-            .ok()
-            .and_then(|runtime| credential_id(&runtime.config).map(str::to_string))
-    });
-    let Some(credential) = credential else {
-        return Ok(None);
+    supplied_credential: Option<String>,
+    supplied_private_key: Option<String>,
+) -> CommandResult<ConnectionSecrets> {
+    let credential = if supplied_credential.is_some() {
+        supplied_credential
+    } else if let Some(credential_id) = credential_id(config) {
+        Some(
+            state
+                .security
+                .mapping_password(credential_id)?
+                .ok_or_else(|| {
+                    "系统凭据库中没有该映射的密码或私钥口令，请重新输入并保存".to_string()
+                })?,
+        )
+    } else {
+        None
     };
-    state
-        .security
-        .mapping_password(&credential)?
-        .map(Some)
-        .ok_or_else(|| "系统凭据库中没有该映射的密码，请重新输入并保存".into())
+    let private_key = if supplied_private_key.is_some() {
+        supplied_private_key
+    } else if let Some(key_id) = private_key_id(config) {
+        Some(
+            state
+                .security
+                .mapping_private_key(key_id)?
+                .ok_or_else(|| "系统凭据库中没有该映射的 SSH 私钥，请重新粘贴并保存".to_string())?,
+        )
+    } else {
+        None
+    };
+    Ok(ConnectionSecrets {
+        credential,
+        private_key,
+    })
 }
 
 fn credential_id(config: &MappingConfig) -> Option<&str> {
@@ -374,8 +502,38 @@ fn credential_id(config: &MappingConfig) -> Option<&str> {
     }
 }
 
-fn normalized_password(password: Option<String>) -> Option<String> {
-    password.filter(|value| !value.is_empty())
+fn private_key_id(config: &MappingConfig) -> Option<&str> {
+    match &config.auth {
+        AuthMethod::PrivateKey { key_id, .. } => key_id.as_deref(),
+        _ => None,
+    }
+}
+
+fn has_persisted_authentication(config: &MappingConfig) -> bool {
+    match &config.auth {
+        AuthMethod::Password { credential_id } => credential_id.is_some(),
+        AuthMethod::PrivateKey {
+            key_path, key_id, ..
+        } => key_path.is_some() || key_id.is_some(),
+        AuthMethod::Anonymous => true,
+    }
+}
+
+fn normalized_secret(secret: Option<String>) -> Option<String> {
+    secret.filter(|value| !value.is_empty())
+}
+
+fn validate_host_and_port(host: &str, port: u16) -> CommandResult<()> {
+    let host = host.trim();
+    if host.is_empty()
+        || port == 0
+        || host.chars().any(|character| {
+            character.is_whitespace() || matches!(character, '/' | '?' | '#' | '@')
+        })
+    {
+        return Err("SSH 服务器地址或端口无效".into());
+    }
+    Ok(())
 }
 
 fn rollback_mapping(state: &AppState, existing: Option<MappingRuntime>, mapping_id: &str) {

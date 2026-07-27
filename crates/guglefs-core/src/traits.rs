@@ -2,6 +2,12 @@ use async_trait::async_trait;
 
 use crate::{EngineError, EngineResult, MappingConfig};
 
+#[derive(Default)]
+pub struct ConnectionSecrets {
+    pub credential: Option<String>,
+    pub private_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EntryKind {
     #[default]
@@ -89,6 +95,6 @@ pub trait RemoteFileSystem: Send + Sync {
 
 #[async_trait]
 pub trait MountDriver: Send + Sync {
-    async fn mount(&self, config: &MappingConfig, password: Option<String>) -> EngineResult<()>;
+    async fn mount(&self, config: &MappingConfig, secrets: ConnectionSecrets) -> EngineResult<()>;
     async fn unmount(&self, mount_point: &str) -> EngineResult<()>;
 }

@@ -25,7 +25,11 @@ pub enum AuthMethod {
         credential_id: Option<String>,
     },
     PrivateKey {
-        key_path: String,
+        #[serde(default)]
+        key_path: Option<String>,
+        #[serde(default)]
+        key_id: Option<String>,
+        #[serde(default)]
         credential_id: Option<String>,
     },
     Anonymous,
@@ -45,6 +49,8 @@ pub struct MappingConfig {
     pub mount_point: String,
     #[serde(default)]
     pub ftp_tls: bool,
+    #[serde(default)]
+    pub host_key_fingerprint: Option<String>,
     pub auto_mount: bool,
 }
 
@@ -132,6 +138,7 @@ mod tests {
             remote_path: "/".into(),
             mount_point: "/mnt/files".into(),
             ftp_tls: false,
+            host_key_fingerprint: None,
             auto_mount: false,
         };
         config.host = "files.example.com@attacker.test".into();

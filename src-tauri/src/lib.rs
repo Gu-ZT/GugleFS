@@ -22,6 +22,7 @@ pub struct AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -51,6 +52,7 @@ pub fn run() {
             commands::list_mappings,
             commands::save_mapping,
             commands::delete_mapping,
+            commands::inspect_sftp_host_key,
             commands::test_remote_connection,
             commands::mount_mapping,
             commands::restore_startup_mappings,

@@ -11,7 +11,8 @@
     "check": "pnpm web:build && cargo check --workspace"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0"
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "2.7.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
@@ -23,4 +24,3 @@
     "node": ">=20"
   }
 }
-

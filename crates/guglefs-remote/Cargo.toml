@@ -11,6 +11,8 @@ guglefs-core = { path = "../guglefs-core" }
 percent-encoding.workspace = true
 quick-xml.workspace = true
 reqwest.workspace = true
+russh = { version = "0.61.1", default-features = false, features = ["ring", "rsa"] }
+russh-sftp = "2.3.0"
 suppaftp = { version = "7.0.7", features = ["tokio-async-native-tls"] }
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
 

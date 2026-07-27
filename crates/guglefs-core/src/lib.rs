@@ -10,6 +10,7 @@ pub use manager::MappingManager;
 pub use model::{AuthMethod, MappingConfig, MappingRuntime, MappingState, Protocol};
 pub use persistence::{ConfigDocument, CONFIG_SCHEMA_VERSION};
 pub use traits::{
-    DirectoryEntry, EntryKind, FileMetadata, FileTimes, MountDriver, RemoteFileSystem,
+    ConnectionSecrets, DirectoryEntry, EntryKind, FileMetadata, FileTimes, MountDriver,
+    RemoteFileSystem,
 };
 pub use vfs::{DirectoryHandle, FileHandle, OpenOptions, RemoteVfs, VirtualFileSystem};
