@@ -303,6 +303,12 @@ dialog::backdrop {
   border-bottom: 1px solid #e1e4e5;
 }
 
+.dialog-subtitle {
+  margin-top: 5px;
+  color: #687073;
+  font-size: 12px;
+}
+
 .dialog-heading .eyebrow {
   color: #147052;
 }

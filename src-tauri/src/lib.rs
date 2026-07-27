@@ -3,11 +3,13 @@ mod commands;
 use std::path::PathBuf;
 
 use guglefs_core::MappingManager;
+use guglefs_mount::SystemMountDriver;
 use tauri::Manager;
 
 pub struct AppState {
     pub manager: MappingManager,
     pub config_path: PathBuf,
+    pub mount_driver: SystemMountDriver,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,6 +26,7 @@ pub fn run() {
             app.manage(AppState {
                 manager,
                 config_path,
+                mount_driver: SystemMountDriver::default(),
             });
             Ok(())
         })

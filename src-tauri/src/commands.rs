@@ -1,4 +1,7 @@
-use guglefs_core::{EngineError, MappingConfig, MappingRuntime, Protocol, RemoteFileSystem};
+use guglefs_core::{
+    EngineError, MappingConfig, MappingRuntime, MappingState, MountDriver, Protocol,
+    RemoteFileSystem,
+};
 use guglefs_remote::WebDavFileSystem;
 use tauri::State;
 
@@ -62,14 +65,61 @@ pub async fn test_webdav_connection(
 }
 
 #[tauri::command]
-pub fn mount_mapping(_id: String) -> CommandResult<()> {
-    Err(EngineError::NotImplemented("mount orchestration is tracked in TODO.md".into()).to_string())
+pub async fn mount_mapping(
+    state: State<'_, AppState>,
+    id: String,
+    password: Option<String>,
+) -> CommandResult<MappingRuntime> {
+    let runtime = state
+        .manager
+        .begin_mount(&id)
+        .map_err(|error| error.to_string())?;
+    let result = state
+        .mount_driver
+        .mount(&runtime.config, password.filter(|value| !value.is_empty()))
+        .await;
+    match result {
+        Ok(()) => state
+            .manager
+            .finish_mount(&id, MappingState::Mounted, None)
+            .map_err(|error| error.to_string()),
+        Err(error) => {
+            let message = error.to_string();
+            let _ = state
+                .manager
+                .finish_mount(&id, MappingState::Error, Some(message.clone()));
+            Err(message)
+        }
+    }
 }
 
 #[tauri::command]
-pub fn unmount_mapping(_id: String) -> CommandResult<()> {
-    Err(
-        EngineError::NotImplemented("unmount orchestration is tracked in TODO.md".into())
-            .to_string(),
-    )
+pub async fn unmount_mapping(
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<MappingRuntime> {
+    let runtime = state.manager.get(&id).map_err(|error| error.to_string())?;
+    if runtime.state != MappingState::Mounted {
+        return Err(EngineError::NotMounted(id).to_string());
+    }
+
+    let result = state
+        .mount_driver
+        .unmount(&runtime.config.mount_point)
+        .await;
+    match result {
+        Ok(()) => state
+            .manager
+            .finish_mount(&runtime.config.id, MappingState::Unmounted, None)
+            .map_err(|error| error.to_string()),
+        Err(error) => {
+            let message = error.to_string();
+            let _ = state.manager.finish_mount(
+                &runtime.config.id,
+                MappingState::Mounted,
+                Some(message.clone()),
+            );
+            Err(message)
+        }
+    }
 }

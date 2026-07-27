@@ -89,6 +89,6 @@ pub trait RemoteFileSystem: Send + Sync {
 
 #[async_trait]
 pub trait MountDriver: Send + Sync {
-    async fn mount(&self, config: &MappingConfig) -> EngineResult<()>;
+    async fn mount(&self, config: &MappingConfig, password: Option<String>) -> EngineResult<()>;
     async fn unmount(&self, mount_point: &str) -> EngineResult<()>;
 }

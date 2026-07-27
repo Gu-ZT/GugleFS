@@ -56,6 +56,10 @@ pnpm dev
 pnpm check
 ```
 
+### Windows mount runtime
+
+Install [WinFsp 2.1](https://github.com/winfsp/winfsp/releases) before using a WebDAV mapping. GugleFS loads WinFsp at mount time, accepts either a drive letter such as `Z:` or an existing absolute directory, and keeps the WebDAV password in memory only for that mount session.
+
 开发真实挂载功能前，Linux 需要 FUSE3 开发包；macOS 需要 macFUSE。
 
 ## 安全边界

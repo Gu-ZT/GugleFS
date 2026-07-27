@@ -12,10 +12,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[target.'cfg(windows)'.build-dependencies]
+winfsp_build = "0.1.1"
+
 [dependencies]
 guglefs-core = { path = "../crates/guglefs-core" }
 guglefs-mount = { path = "../crates/guglefs-mount" }
 guglefs-remote = { path = "../crates/guglefs-remote" }
 serde.workspace = true
 tauri = { version = "2", features = [] }
-

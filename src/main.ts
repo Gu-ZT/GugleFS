@@ -114,6 +114,29 @@ app.innerHTML = `
       </div>
     </form>
   </dialog>
+  <dialog id="mount-dialog">
+    <form id="mount-form">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">MOUNT</p>
+          <h2>Mount mapping</h2>
+          <p id="mount-target" class="dialog-subtitle"></p>
+        </div>
+        <button id="close-mount-dialog" class="icon-button" type="button" aria-label="Close" title="Close">X</button>
+      </div>
+      <div class="form-grid">
+        <label class="full-width">
+          <span>Runtime password</span>
+          <input id="mount-password" type="password" autocomplete="current-password" />
+        </label>
+      </div>
+      <div id="mount-notice" class="notice dialog-notice" role="status" hidden></div>
+      <div class="dialog-actions">
+        <button id="cancel-mount-dialog" class="secondary" type="button">Cancel</button>
+        <button id="confirm-mount" class="primary" type="submit">Mount</button>
+      </div>
+    </form>
+  </dialog>
 `;
 
 const dialog = getElement<HTMLDialogElement>("mapping-dialog");
@@ -123,6 +146,10 @@ const emptyState = getElement<HTMLDivElement>("empty-state");
 const notice = getElement<HTMLDivElement>("notice");
 const dialogNotice = getElement<HTMLDivElement>("dialog-notice");
 const testConnectionButton = getElement<HTMLButtonElement>("test-connection");
+const mountDialog = getElement<HTMLDialogElement>("mount-dialog");
+const mountForm = getElement<HTMLFormElement>("mount-form");
+const mountNotice = getElement<HTMLDivElement>("mount-notice");
+let mountTargetId: string | null = null;
 let mappings: MappingRuntime[] = [];
 
 function getElement<T extends HTMLElement>(id: string): T {
@@ -153,6 +180,19 @@ function clearDialogNotice(): void {
   dialogNotice.textContent = "";
 }
 
+function showMountNotice(message: string, kind: "error" | "success" = "error"): void {
+  mountNotice.textContent = message;
+  mountNotice.dataset.kind = kind;
+  mountNotice.hidden = false;
+}
+
+function clearMountDialog(): void {
+  mountTargetId = null;
+  getElement<HTMLInputElement>("mount-password").value = "";
+  mountNotice.hidden = true;
+  mountNotice.textContent = "";
+}
+
 function updateProtocolControls(): void {
   const isWebDav = getElement<HTMLSelectElement>("protocol").value === "webdav";
   getElement<HTMLInputElement>("password").disabled = !isWebDav;
@@ -174,6 +214,15 @@ function openForm(runtime?: MappingRuntime): void {
   getElement<HTMLInputElement>("auto-mount").checked = runtime?.config.autoMount ?? false;
   updateProtocolControls();
   dialog.showModal();
+}
+
+function openMountDialog(runtime: MappingRuntime): void {
+  mountTargetId = runtime.config.id;
+  getElement<HTMLParagraphElement>("mount-target").textContent = `${runtime.config.name} -> ${runtime.config.mountPoint}`;
+  getElement<HTMLInputElement>("mount-password").value = "";
+  mountNotice.hidden = true;
+  mountNotice.textContent = "";
+  mountDialog.showModal();
 }
 
 function statusLabel(state: MappingState): string {
@@ -231,6 +280,7 @@ function renderMappings(): void {
     const status = document.createElement("span");
     status.className = `status status-${runtime.state}`;
     status.textContent = statusLabel(runtime.state);
+    if (runtime.lastError) status.title = runtime.lastError;
     destination.append(mountPoint, status);
 
     const actions = document.createElement("div");
@@ -239,13 +289,27 @@ function renderMappings(): void {
     edit.type = "button";
     edit.className = "secondary compact";
     edit.textContent = "编辑";
+    edit.disabled = runtime.state === "mounting" || runtime.state === "mounted";
     edit.addEventListener("click", () => openForm(runtime));
+    const mount = document.createElement("button");
+    mount.type = "button";
+    mount.className = runtime.state === "mounted" ? "danger compact" : "primary compact";
+    mount.textContent = runtime.state === "mounted" ? "Unmount" : runtime.state === "mounting" ? "Mounting..." : "Mount";
+    mount.disabled = runtime.state === "mounting";
+    mount.addEventListener("click", () => {
+      if (runtime.state === "mounted") {
+        void unmountMapping(config.id);
+      } else {
+        openMountDialog(runtime);
+      }
+    });
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "danger compact";
     remove.textContent = "删除";
     remove.addEventListener("click", () => void deleteMapping(config.id));
-    actions.append(edit, remove);
+    remove.disabled = runtime.state !== "unmounted";
+    actions.append(mount, edit, remove);
 
     item.append(identity, destination, actions);
     list.append(item);
@@ -269,6 +333,38 @@ async function deleteMapping(id: string): Promise<void> {
     renderMappings();
     showNotice("配置已删除", "success");
   } catch (error) {
+    showNotice(String(error));
+  }
+}
+
+function updateMapping(runtime: MappingRuntime): void {
+  const index = mappings.findIndex((item) => item.config.id === runtime.config.id);
+  if (index >= 0) mappings[index] = runtime;
+  renderMappings();
+}
+
+async function mountMapping(id: string, password: string | null): Promise<void> {
+  const current = mappings.find((item) => item.config.id === id);
+  if (!current) return;
+  updateMapping({ ...current, state: "mounting", lastError: null });
+  try {
+    const runtime = await invoke<MappingRuntime>("mount_mapping", { id, password });
+    updateMapping(runtime);
+    mountDialog.close();
+    showNotice("Mapping mounted", "success");
+  } catch (error) {
+    await loadMappings();
+    showMountNotice(String(error));
+  }
+}
+
+async function unmountMapping(id: string): Promise<void> {
+  try {
+    const runtime = await invoke<MappingRuntime>("unmount_mapping", { id });
+    updateMapping(runtime);
+    showNotice("Mapping unmounted", "success");
+  } catch (error) {
+    await loadMappings();
     showNotice(String(error));
   }
 }
@@ -328,5 +424,20 @@ dialog.addEventListener("close", () => {
   getElement<HTMLInputElement>("password").value = "";
   clearDialogNotice();
 });
+
+mountForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!mountTargetId) return;
+  const id = mountTargetId;
+  const password = getElement<HTMLInputElement>("mount-password").value || null;
+  const submit = getElement<HTMLButtonElement>("confirm-mount");
+  submit.disabled = true;
+  void mountMapping(id, password).finally(() => {
+    submit.disabled = false;
+  });
+});
+getElement<HTMLButtonElement>("close-mount-dialog").addEventListener("click", () => mountDialog.close());
+getElement<HTMLButtonElement>("cancel-mount-dialog").addEventListener("click", () => mountDialog.close());
+mountDialog.addEventListener("close", clearMountDialog);
 
 void loadMappings();

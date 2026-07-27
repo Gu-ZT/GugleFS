@@ -6,7 +6,7 @@ pub struct SystemMountDriver;
 
 #[async_trait]
 impl MountDriver for SystemMountDriver {
-    async fn mount(&self, _config: &MappingConfig) -> EngineResult<()> {
+    async fn mount(&self, _config: &MappingConfig, _password: Option<String>) -> EngineResult<()> {
         Err(EngineError::NotImplemented("FUSE mount driver".into()))
     }
 
