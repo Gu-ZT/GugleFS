@@ -10,3 +10,4 @@ src-tauri/target/
 Thumbs.db
 .agents/
 ref/
+.comote/

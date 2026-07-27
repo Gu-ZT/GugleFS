@@ -3,9 +3,10 @@ use guglefs_core::{
     AuthMethod, DirectoryEntry, EngineError, EngineResult, EntryKind, FileMetadata, FsErrorCode,
     MappingConfig, Protocol, RemoteFileSystem,
 };
+use percent_encoding::percent_decode_str;
 use quick_xml::{events::Event, Reader};
 use reqwest::{header, Client, Method, RequestBuilder, StatusCode, Url};
-use std::time::Duration;
+use std::{future::Future, pin::Pin, time::Duration};
 
 #[derive(Debug, Clone)]
 pub struct WebDavFileSystem {
@@ -109,8 +110,8 @@ impl WebDavFileSystem {
     }
 
     fn vfs_path(&self, href: &str) -> Option<String> {
-        let resource_path = normalize_path(href);
-        let base_path = normalize_path(self.base_url.path());
+        let resource_path = decode_url_path(href)?;
+        let base_path = decode_url_path(self.base_url.path())?;
         if resource_path == base_path {
             return Some("/".into());
         }
@@ -164,6 +165,59 @@ impl WebDavFileSystem {
             .map_err(|error| EngineError::Remote(format!("WebDAV PUT request: {error}")))?;
         Self::finish(response, "write").await?;
         Ok(length)
+    }
+
+    fn copy_resource<'a>(
+        &'a self,
+        from: &'a str,
+        to: &'a str,
+        metadata: FileMetadata,
+    ) -> Pin<Box<dyn Future<Output = EngineResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            match metadata.kind {
+                EntryKind::File => {
+                    let content = self.read_range(from, 0, metadata.size).await?;
+                    self.put(to, content).await?;
+                }
+                EntryKind::Directory => {
+                    self.create_dir(to).await?;
+                    for entry in self.read_dir(from).await? {
+                        let target = format!(
+                            "{}/{}",
+                            to.trim_end_matches('/'),
+                            entry.name.trim_matches('/')
+                        );
+                        self.copy_resource(&entry.path, &target, entry.metadata)
+                            .await?;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    async fn rename_manually(
+        &self,
+        from: &str,
+        to: &str,
+        metadata: FileMetadata,
+    ) -> EngineResult<()> {
+        let directory = metadata.kind == EntryKind::Directory;
+        self.copy_resource(from, to, metadata).await?;
+        let response = self
+            .request(Method::DELETE, from)
+            .send()
+            .await
+            .map_err(|error| EngineError::Remote(format!("WebDAV DELETE request: {error}")))?;
+        Self::finish(
+            response,
+            if directory {
+                "remove renamed directory"
+            } else {
+                "remove renamed file"
+            },
+        )
+        .await
     }
 }
 
@@ -230,6 +284,9 @@ impl RemoteFileSystem for WebDavFileSystem {
             .await
             .map_err(|error| EngineError::Remote(format!("WebDAV GET request: {error}")))?;
         let status = response.status();
+        if status == StatusCode::RANGE_NOT_SATISFIABLE {
+            return Ok(Vec::new());
+        }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(status_error(status, "GET", &body));
@@ -323,7 +380,30 @@ impl RemoteFileSystem for WebDavFileSystem {
             .send()
             .await
             .map_err(|error| EngineError::Remote(format!("WebDAV MOVE request: {error}")))?;
-        Self::finish(response, "rename").await
+        if response.status().is_success() {
+            return Ok(());
+        }
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let move_error = status_error(status, "rename", &body);
+        if !move_fallback_allowed(status) {
+            return Err(move_error);
+        }
+
+        match self.metadata(from).await {
+            Ok(metadata) => match self.metadata(to).await {
+                Err(error) if error.code() == FsErrorCode::NotFound => {
+                    self.rename_manually(from, to, metadata).await
+                }
+                _ => Err(move_error),
+            },
+            Err(error) if error.code() == FsErrorCode::NotFound => match self.metadata(to).await {
+                Ok(_) => Ok(()),
+                Err(_) => Err(move_error),
+            },
+            Err(_) => Err(move_error),
+        }
     }
 }
 
@@ -421,15 +501,35 @@ enum Field {
 }
 
 fn normalize_path(path: &str) -> String {
-    let path = Url::parse(path)
-        .map(|url| url.path().to_string())
-        .unwrap_or_else(|_| path.to_string());
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
         "/".into()
     } else {
         format!("/{trimmed}", trimmed = trimmed.trim_start_matches('/'))
     }
+}
+
+fn decode_url_path(path: &str) -> Option<String> {
+    let encoded_path = Url::parse(path)
+        .map(|url| url.path().to_string())
+        .unwrap_or_else(|_| path.to_string());
+    let mut decoded_path = String::with_capacity(encoded_path.len());
+
+    for (index, encoded_segment) in encoded_path.split('/').enumerate() {
+        if index > 0 {
+            decoded_path.push('/');
+        }
+        let decoded_segment = percent_decode_str(encoded_segment).decode_utf8().ok()?;
+        if decoded_segment
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | '\0'))
+        {
+            return None;
+        }
+        decoded_path.push_str(&decoded_segment);
+    }
+
+    Some(normalize_path(&decoded_path))
 }
 
 fn same_origin(left: &Url, right: &Url) -> bool {
@@ -461,6 +561,19 @@ fn status_error(status: StatusCode, operation: &str, body: &str) -> EngineError 
         _ => FsErrorCode::RemoteIo,
     };
     EngineError::filesystem(code, message)
+}
+
+fn move_fallback_allowed(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::BAD_REQUEST
+            | StatusCode::METHOD_NOT_ALLOWED
+            | StatusCode::NOT_IMPLEMENTED
+            | StatusCode::INTERNAL_SERVER_ERROR
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+    )
 }
 
 #[cfg(test)]
@@ -514,7 +627,29 @@ mod tests {
             file_system.vfs_path("https://example.test/remote/docs/file.txt"),
             Some("/docs/file.txt".into())
         );
+        assert_eq!(
+            file_system.vfs_path("/remote/%E4%B8%AD%E6%96%87.txt"),
+            Some("/中文.txt".into())
+        );
         assert_eq!(file_system.vfs_path("/other/file.txt"), None);
+    }
+
+    #[test]
+    fn rejects_encoded_path_separators_from_webdav_hrefs() {
+        let file_system = WebDavFileSystem::new("https://example.test/remote", None, None).unwrap();
+
+        assert_eq!(file_system.vfs_path("/remote/dir%2Ffile.txt"), None);
+        assert_eq!(file_system.vfs_path("/remote/dir%5Cfile.txt"), None);
+    }
+
+    #[test]
+    fn encodes_unicode_vfs_paths_once_for_requests() {
+        let file_system = WebDavFileSystem::new("https://example.test/remote", None, None).unwrap();
+
+        assert_eq!(
+            file_system.endpoint("/中文.txt").path(),
+            "/remote/%E4%B8%AD%E6%96%87.txt"
+        );
     }
 
     #[test]
@@ -539,6 +674,65 @@ mod tests {
             b"cdef"
         );
         server.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn treats_an_unsatisfied_range_as_end_of_file() {
+        let (base_url, server, _requests) =
+            spawn_test_server_with_get_status(1, "416 Range Not Satisfiable", "invalid range")
+                .await;
+        let file_system = test_file_system(&base_url);
+
+        assert_eq!(
+            file_system.read_range("/file.txt", 10, 4).await.unwrap(),
+            Vec::<u8>::new()
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sends_an_encoded_absolute_url_in_the_move_destination() {
+        let (base_url, server, requests) = spawn_test_server(1, "").await;
+        let file_system = test_file_system(&base_url);
+
+        file_system
+            .rename("/docs/source.txt", "/docs/中文.txt")
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        let request = String::from_utf8_lossy(&requests.lock().unwrap()[0]).into_owned();
+        assert!(request.starts_with("MOVE /remote/docs/source.txt"));
+        assert!(request.lines().any(|line| {
+            line == format!("destination: {base_url}/docs/%E4%B8%AD%E6%96%87.txt")
+        }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn falls_back_to_download_upload_and_delete_when_move_is_broken() {
+        let (base_url, server, requests) =
+            spawn_test_server_with_move_status(6, "500 Internal Server Error").await;
+        let file_system = test_file_system(&base_url);
+
+        file_system
+            .rename("/docs/source.txt", "/docs/target.txt")
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        let requests = requests.lock().unwrap();
+        assert!(String::from_utf8_lossy(&requests[0]).starts_with("MOVE /remote/docs/source.txt"));
+        assert!(
+            String::from_utf8_lossy(&requests[1]).starts_with("PROPFIND /remote/docs/source.txt")
+        );
+        assert!(
+            String::from_utf8_lossy(&requests[2]).starts_with("PROPFIND /remote/docs/target.txt")
+        );
+        assert!(String::from_utf8_lossy(&requests[3]).starts_with("GET /remote/docs/source.txt"));
+        let put = String::from_utf8_lossy(&requests[4]);
+        assert!(put.starts_with("PUT /remote/docs/target.txt"));
+        assert!(put.ends_with("hello"));
+        assert!(String::from_utf8_lossy(&requests[5]).starts_with("DELETE /remote/docs/source.txt"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -575,6 +769,30 @@ mod tests {
         request_count: usize,
         get_body: &'static str,
     ) -> (String, JoinHandle<()>, Arc<Mutex<Vec<Vec<u8>>>>) {
+        spawn_test_server_with_statuses(request_count, "200 OK", get_body, "204 No Content").await
+    }
+
+    async fn spawn_test_server_with_get_status(
+        request_count: usize,
+        get_status: &'static str,
+        get_body: &'static str,
+    ) -> (String, JoinHandle<()>, Arc<Mutex<Vec<Vec<u8>>>>) {
+        spawn_test_server_with_statuses(request_count, get_status, get_body, "204 No Content").await
+    }
+
+    async fn spawn_test_server_with_move_status(
+        request_count: usize,
+        move_status: &'static str,
+    ) -> (String, JoinHandle<()>, Arc<Mutex<Vec<Vec<u8>>>>) {
+        spawn_test_server_with_statuses(request_count, "200 OK", "hello", move_status).await
+    }
+
+    async fn spawn_test_server_with_statuses(
+        request_count: usize,
+        get_status: &'static str,
+        get_body: &'static str,
+        move_status: &'static str,
+    ) -> (String, JoinHandle<()>, Arc<Mutex<Vec<Vec<u8>>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -586,13 +804,20 @@ mod tests {
                 let request_text = String::from_utf8_lossy(&request);
                 let method = request_text.split_whitespace().next().unwrap_or_default();
                 let (status, body, content_type) = match method {
+                    "PROPFIND"
+                        if request_text.starts_with("PROPFIND /remote/docs/target.txt ") =>
+                    {
+                        ("404 Not Found", "", "text/plain")
+                    }
                     "PROPFIND" => (
                         "207 Multi-Status",
                         "<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/remote/file.txt</d:href><d:propstat><d:prop><d:getcontentlength>5</d:getcontentlength></d:prop></d:propstat></d:response></d:multistatus>",
                         "application/xml",
                     ),
-                    "GET" => ("200 OK", get_body, "text/plain"),
+                    "GET" => (get_status, get_body, "text/plain"),
                     "PUT" => ("204 No Content", "", "text/plain"),
+                    "MOVE" => (move_status, "", "text/plain"),
+                    "DELETE" => ("204 No Content", "", "text/plain"),
                     _ => ("500 Internal Server Error", "unexpected method", "text/plain"),
                 };
                 captured_requests.lock().unwrap().push(request);

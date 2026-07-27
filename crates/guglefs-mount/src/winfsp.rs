@@ -14,7 +14,7 @@ use guglefs_core::{
     MappingConfig, MountDriver, OpenOptions, RemoteFileSystem, RemoteVfs, VirtualFileSystem,
 };
 use guglefs_remote::WebDavFileSystem;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Handle;
 use widestring::{U16CStr, U16CString};
 use winfsp_wrs::{
     filetime_now, CleanupFlags, CreateFileInfo, CreateOptions, DirInfo, FileAccessRights,
@@ -41,7 +41,7 @@ impl Default for SystemMountDriver {
 
 struct MountContext {
     vfs: Arc<WebDavVfs>,
-    runtime: Arc<Runtime>,
+    runtime: Handle,
 }
 
 #[derive(Clone, Copy)]
@@ -116,30 +116,28 @@ impl MountCallbacks {
         create_options: CreateOptions,
         granted_access: FileAccessRights,
     ) -> Result<(Arc<WinHandle>, FileInfo), NTSTATUS> {
-        let directory = create_options.is(CreateOptions::FILE_DIRECTORY_FILE);
         let writable = Self::access_is_writable(granted_access);
         let readable = Self::access_is_readable(granted_access) || !writable;
-        let (kind, handle, metadata) = if directory {
-            let handle = self.mount.block_on(self.mount.vfs.open_dir(&path))?;
-            let metadata = self.mount.metadata(&path)?;
-            (
-                EntryKind::Directory,
-                HandleKind::Directory(handle),
-                metadata,
-            )
-        } else {
-            let handle = self.mount.block_on(self.mount.vfs.open(
-                &path,
-                OpenOptions {
-                    read: readable,
-                    write: writable,
-                    create: false,
-                    truncate: false,
-                    append: false,
-                },
-            ))?;
-            let metadata = self.mount.metadata(&path)?;
-            (EntryKind::File, HandleKind::File(handle), metadata)
+        let metadata = self.mount.metadata(&path)?;
+        let kind = existing_entry_kind(&metadata, create_options)?;
+        let handle = match kind {
+            EntryKind::Directory => {
+                let handle = self.mount.block_on(self.mount.vfs.open_dir(&path))?;
+                HandleKind::Directory(handle)
+            }
+            EntryKind::File => {
+                let handle = self.mount.block_on(self.mount.vfs.open(
+                    &path,
+                    OpenOptions {
+                        read: readable,
+                        write: writable,
+                        create: false,
+                        truncate: false,
+                        append: false,
+                    },
+                ))?;
+                HandleKind::File(handle)
+            }
         };
         Ok((
             Arc::new(WinHandle {
@@ -485,12 +483,9 @@ impl MountDriver for SystemMountDriver {
         let remote = Arc::new(remote);
         let vfs = Arc::new(RemoteVfs::new(remote));
         vfs.getattr("/").await?;
-        let runtime = Arc::new(
-            Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| EngineError::Internal(format!("create mount runtime: {error}")))?,
-        );
+        let runtime = Handle::try_current().map_err(|error| {
+            EngineError::Internal(format!("mount must run inside a Tokio runtime: {error}"))
+        })?;
         let context = Arc::new(MountContext { vfs, runtime });
         winfsp_wrs::init().map_err(|error| {
             EngineError::Mount(format!(
@@ -501,6 +496,7 @@ impl MountDriver for SystemMountDriver {
             .map_err(|_| EngineError::InvalidConfig("mount point is not valid UTF-16".into()))?;
         let mut volume_params = winfsp_wrs::VolumeParams::default();
         volume_params
+            .set_case_sensitive_search(true)
             .set_case_preserved_names(true)
             .set_unicode_on_disk(true)
             .set_pass_query_directory_pattern(true)
@@ -580,7 +576,25 @@ fn file_info(metadata: &FileMetadata) -> FileInfo {
         .to_owned()
 }
 
+fn existing_entry_kind(
+    metadata: &FileMetadata,
+    create_options: CreateOptions,
+) -> Result<EntryKind, NTSTATUS> {
+    match metadata.kind {
+        EntryKind::Directory if create_options.is(CreateOptions::FILE_NON_DIRECTORY_FILE) => {
+            Err(STATUS_FILE_IS_A_DIRECTORY)
+        }
+        EntryKind::File if create_options.is(CreateOptions::FILE_DIRECTORY_FILE) => {
+            Err(STATUS_NOT_A_DIRECTORY)
+        }
+        kind => Ok(kind),
+    }
+}
+
 fn ntstatus(error: EngineError) -> NTSTATUS {
+    #[cfg(debug_assertions)]
+    eprintln!("WinFsp operation failed: {error}");
+
     match error.code() {
         FsErrorCode::NotFound => STATUS_OBJECT_NAME_NOT_FOUND,
         FsErrorCode::AlreadyExists => STATUS_OBJECT_NAME_COLLISION,
@@ -596,5 +610,50 @@ fn ntstatus(error: EngineError) -> NTSTATUS {
         | FsErrorCode::RemoteIo
         | FsErrorCode::MountIo
         | FsErrorCode::Internal => STATUS_IO_DEVICE_ERROR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metadata(kind: EntryKind) -> FileMetadata {
+        FileMetadata {
+            kind,
+            size: 0,
+            modified: None,
+        }
+    }
+
+    #[test]
+    fn open_kind_uses_metadata_without_a_type_constraint() {
+        let options = CreateOptions(0);
+
+        assert_eq!(
+            existing_entry_kind(&metadata(EntryKind::Directory), options),
+            Ok(EntryKind::Directory)
+        );
+        assert_eq!(
+            existing_entry_kind(&metadata(EntryKind::File), options),
+            Ok(EntryKind::File)
+        );
+    }
+
+    #[test]
+    fn open_kind_enforces_explicit_type_constraints() {
+        assert_eq!(
+            existing_entry_kind(
+                &metadata(EntryKind::Directory),
+                CreateOptions::FILE_NON_DIRECTORY_FILE,
+            ),
+            Err(STATUS_FILE_IS_A_DIRECTORY)
+        );
+        assert_eq!(
+            existing_entry_kind(
+                &metadata(EntryKind::File),
+                CreateOptions::FILE_DIRECTORY_FILE,
+            ),
+            Err(STATUS_NOT_A_DIRECTORY)
+        );
     }
 }

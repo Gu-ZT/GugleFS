@@ -11,7 +11,6 @@ guglefs-core = { path = "../guglefs-core" }
 
 [target.'cfg(windows)'.dependencies]
 guglefs-remote = { path = "../guglefs-remote" }
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt"] }
 widestring = "1"
 winfsp_wrs = "0.4.1"
-
