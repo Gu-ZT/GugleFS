@@ -533,6 +533,10 @@ input:disabled {
   accent-color: #147052;
 }
 
+.protocol-field[hidden] {
+  display: none;
+}
+
 .dialog-actions {
   justify-content: flex-end;
   gap: 8px;

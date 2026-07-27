@@ -13,7 +13,7 @@ use guglefs_core::{
     DirectoryHandle, EngineError, EngineResult, EntryKind, FileHandle, FileMetadata, FsErrorCode,
     MappingConfig, MountDriver, OpenOptions, RemoteFileSystem, RemoteVfs, VirtualFileSystem,
 };
-use guglefs_remote::WebDavFileSystem;
+use guglefs_remote::{FtpFileSystem, WebDavFileSystem};
 use tokio::runtime::Handle;
 use widestring::{U16CStr, U16CString};
 use winfsp_wrs::{
@@ -25,7 +25,7 @@ use winfsp_wrs::{
     STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND,
 };
 
-type WebDavVfs = RemoteVfs<WebDavFileSystem>;
+type DynamicVfs = RemoteVfs<dyn RemoteFileSystem>;
 
 pub struct SystemMountDriver {
     mounts: Mutex<HashMap<String, FileSystem>>,
@@ -40,7 +40,7 @@ impl Default for SystemMountDriver {
 }
 
 struct MountContext {
-    vfs: Arc<WebDavVfs>,
+    vfs: Arc<DynamicVfs>,
     runtime: Handle,
 }
 
@@ -464,11 +464,6 @@ impl FileSystemInterface for MountCallbacks {
 #[async_trait]
 impl MountDriver for SystemMountDriver {
     async fn mount(&self, config: &MappingConfig, password: Option<String>) -> EngineResult<()> {
-        if config.protocol != guglefs_core::Protocol::Webdav {
-            return Err(EngineError::InvalidConfig(
-                "WinFsp driver currently supports WebDAV mappings only".into(),
-            ));
-        }
         let mount_point = normalize_mount_point(&config.mount_point)?;
         if self
             .mounts
@@ -478,9 +473,16 @@ impl MountDriver for SystemMountDriver {
         {
             return Err(EngineError::AlreadyMounted(mount_point));
         }
-        let remote = WebDavFileSystem::from_config(config, password)?;
+        let remote: Arc<dyn RemoteFileSystem> = match config.protocol {
+            guglefs_core::Protocol::Ftp => Arc::new(FtpFileSystem::from_config(config, password)?),
+            guglefs_core::Protocol::Webdav => {
+                Arc::new(WebDavFileSystem::from_config(config, password)?)
+            }
+            guglefs_core::Protocol::Sftp => {
+                return Err(EngineError::NotImplemented("SFTP mount adapter".into()));
+            }
+        };
         remote.connect().await?;
-        let remote = Arc::new(remote);
         let vfs = Arc::new(RemoteVfs::new(remote));
         vfs.getattr("/").await?;
         let runtime = Handle::try_current().map_err(|error| {

@@ -43,6 +43,8 @@ pub struct MappingConfig {
     pub auth: AuthMethod,
     pub remote_path: String,
     pub mount_point: String,
+    #[serde(default)]
+    pub ftp_tls: bool,
     pub auto_mount: bool,
 }
 
@@ -129,6 +131,7 @@ mod tests {
             auth: AuthMethod::Anonymous,
             remote_path: "/".into(),
             mount_point: "/mnt/files".into(),
+            ftp_tls: false,
             auto_mount: false,
         };
         config.host = "files.example.com@attacker.test".into();

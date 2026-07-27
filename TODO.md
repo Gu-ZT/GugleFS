@@ -28,10 +28,10 @@
 
 ## P1：远程协议
 
-- [ ] 选型并接入 Rust FTP 客户端库
+- [x] 选型并接入 Rust FTP 客户端库
 - [ ] 选型并接入 Rust SSH/SFTP 客户端库（优先验证 Windows 构建链）
-- [ ] FTP：支持显式 FTPS，并明确是否支持隐式 FTPS
-- [ ] FTP：处理被动模式、UTF-8、时区和不可靠 `LIST` 格式
+- [x] FTP：支持显式 FTPS；明确不支持已弃用的隐式 FTPS
+- [x] FTP：使用被动模式和 MLST/MLSD，并为旧服务器回退解析 `LIST`
 - [ ] SFTP：支持密码、私钥和 SSH Agent
 - [ ] SFTP：实现 known_hosts 校验和首次连接确认流程
 - [x] WebDAV：接入 Rust HTTPS/WebDAV 客户端基础依赖，首个版本仅允许 HTTPS
@@ -60,11 +60,11 @@
 
 ## P1：配置与凭据
 
-- [x] 使用 Windows Credential Manager 保存 WebDAV 密码，禁止写入配置文件或日志
+- [x] 使用 Windows Credential Manager 保存 FTP/FTPS/WebDAV 密码，禁止写入配置文件或日志
 - [x] 使用 TOTP 2FA 保护应用启动和凭据操作
 - [ ] 实现配置迁移、导入与导出（导出不包含凭据）
 - [x] 解锁时恢复 `auto_mount` 及上次仍挂载且已保存凭据的映射
-- [x] 增加 WebDAV 连接测试
+- [x] 增加 FTP/FTPS/WebDAV 连接测试
 - [ ] 增加远程路径选择
 - [ ] 校验重复盘符、重复挂载目录和非法平台路径
 

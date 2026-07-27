@@ -14,6 +14,7 @@ interface MappingConfig {
   auth: { type: "password"; credential_id: string | null };
   remotePath: string;
   mountPoint: string;
+  ftpTls: boolean;
   autoMount: boolean;
 }
 
@@ -156,6 +157,10 @@ app.innerHTML = `
             <span>密码</span>
             <input id="password" name="password" type="password" autocomplete="new-password" placeholder="留空则保留已保存密码" />
           </label>
+          <label id="ftp-tls-field" class="checkbox-row full-width protocol-field" hidden>
+            <input id="ftp-tls" name="ftpTls" type="checkbox" />
+            <span>使用显式 TLS (FTPS)</span>
+          </label>
           <label>
             <span>远程路径</span>
             <input id="remote-path" name="remotePath" required value="/" />
@@ -172,7 +177,7 @@ app.innerHTML = `
         <div id="dialog-notice" class="notice dialog-notice" role="status" hidden></div>
         <div class="dialog-actions">
           <button id="cancel-dialog" class="secondary" type="button">取消</button>
-          <button id="test-connection" class="secondary" type="button">测试 WebDAV 连接</button>
+          <button id="test-connection" class="secondary" type="button">测试连接</button>
           <button class="primary" type="submit">保存配置</button>
         </div>
       </form>
@@ -335,9 +340,10 @@ function clearMountDialog(): void {
 }
 
 function updateProtocolControls(): void {
-  const isWebDav = getElement<HTMLSelectElement>("protocol").value === "webdav";
-  getElement<HTMLInputElement>("password").disabled = !isWebDav;
-  testConnectionButton.disabled = !isWebDav;
+  const protocol = getElement<HTMLSelectElement>("protocol").value as Protocol;
+  getElement<HTMLInputElement>("password").disabled = protocol === "sftp";
+  getElement<HTMLElement>("ftp-tls-field").hidden = protocol !== "ftp";
+  testConnectionButton.textContent = `测试 ${protocol.toUpperCase()} 连接`;
 }
 
 function openForm(runtime?: MappingRuntime): void {
@@ -353,6 +359,7 @@ function openForm(runtime?: MappingRuntime): void {
   getElement<HTMLInputElement>("username").value = runtime?.config.username ?? "";
   getElement<HTMLInputElement>("remote-path").value = runtime?.config.remotePath ?? "/";
   getElement<HTMLInputElement>("mount-point").value = runtime?.config.mountPoint ?? "Z:";
+  getElement<HTMLInputElement>("ftp-tls").checked = runtime?.config.ftpTls ?? false;
   getElement<HTMLInputElement>("auto-mount").checked = runtime?.config.autoMount ?? false;
   updateProtocolControls();
   dialog.showModal();
@@ -389,6 +396,7 @@ function readMappingConfig(): MappingConfig {
     auth: { type: "password", credential_id: editingCredentialId },
     remotePath: getElement<HTMLInputElement>("remote-path").value.trim(),
     mountPoint: getElement<HTMLInputElement>("mount-point").value.trim(),
+    ftpTls: protocol === "ftp" && getElement<HTMLInputElement>("ftp-tls").checked,
     autoMount: getElement<HTMLInputElement>("auto-mount").checked,
   };
 }
@@ -621,12 +629,11 @@ testConnectionButton.addEventListener("click", () => {
     try {
       const config = readMappingConfig();
       const password = getElement<HTMLInputElement>("password").value || null;
-      await invoke("test_webdav_connection", { config, password });
-      showDialogNotice("WebDAV 连接成功", "success");
+      await invoke("test_remote_connection", { config, password });
+      showDialogNotice(`${config.protocol.toUpperCase()} 连接成功`, "success");
     } catch (error) {
       showDialogNotice(String(error));
     } finally {
-      testConnectionButton.textContent = "测试 WebDAV 连接";
       updateProtocolControls();
     }
   })();

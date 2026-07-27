@@ -11,6 +11,8 @@ guglefs-core = { path = "../guglefs-core" }
 percent-encoding.workspace = true
 quick-xml.workspace = true
 reqwest.workspace = true
+suppaftp = { version = "7.0.7", features = ["tokio-async-native-tls"] }
+tokio = { workspace = true, features = ["io-util", "net", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }

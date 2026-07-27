@@ -133,6 +133,7 @@ mod tests {
             },
             remote_path: "/data".into(),
             mount_point: mount_point.into(),
+            ftp_tls: false,
             auto_mount: false,
         }
     }

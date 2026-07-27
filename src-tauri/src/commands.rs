@@ -2,7 +2,7 @@ use guglefs_core::{
     AuthMethod, EngineError, MappingConfig, MappingRuntime, MappingState, MountDriver, Protocol,
     RemoteFileSystem,
 };
-use guglefs_remote::WebDavFileSystem;
+use guglefs_remote::{FtpFileSystem, WebDavFileSystem};
 use serde::Serialize;
 use tauri::State;
 
@@ -125,22 +125,25 @@ pub fn delete_mapping(state: State<'_, AppState>, id: String) -> CommandResult<(
 }
 
 #[tauri::command]
-pub async fn test_webdav_connection(
+pub async fn test_remote_connection(
     state: State<'_, AppState>,
     config: MappingConfig,
     password: Option<String>,
 ) -> CommandResult<()> {
     state.security.require_unlocked()?;
-    if config.protocol != Protocol::Webdav {
-        return Err(EngineError::InvalidConfig(
-            "connection testing is currently available for WebDAV only".into(),
-        )
-        .to_string());
-    }
     config.validate().map_err(|error| error.to_string())?;
     let password = resolve_password(&state, &config, normalized_password(password))?;
-    let remote =
-        WebDavFileSystem::from_config(&config, password).map_err(|error| error.to_string())?;
+    let remote: Box<dyn RemoteFileSystem> = match config.protocol {
+        Protocol::Ftp => Box::new(
+            FtpFileSystem::from_config(&config, password).map_err(|error| error.to_string())?,
+        ),
+        Protocol::Webdav => Box::new(
+            WebDavFileSystem::from_config(&config, password).map_err(|error| error.to_string())?,
+        ),
+        Protocol::Sftp => {
+            return Err(EngineError::NotImplemented("SFTP adapter".into()).to_string())
+        }
+    };
     remote.connect().await.map_err(|error| error.to_string())?;
     remote
         .metadata("/")
