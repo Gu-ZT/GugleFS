@@ -37,7 +37,7 @@
 - [x] WebDAV：接入 Rust HTTPS/WebDAV 客户端基础依赖，首个版本仅允许 HTTPS
 - [x] WebDAV：实现 `PROPFIND`、`GET`、`PUT`、`MKCOL`、`MOVE` 和 `DELETE` 基础请求
 - [x] WebDAV：将运行时凭据接入连接测试
-- [ ] WebDAV：将运行时凭据接入挂载编排
+- [x] WebDAV：将系统凭据接入挂载编排
 - [x] WebDAV：支持 Basic 认证
 - [ ] WebDAV：支持 Digest，评估 Bearer Token 与客户端证书
 - [ ] WebDAV：正确处理 ETag 和条件请求
@@ -50,8 +50,8 @@
 
 ## P1：系统挂载
 
-- [ ] Windows：选型并接入 WinFsp Rust bindings
-- [ ] Windows：实现盘符检查、占用检测、挂载和安全卸载
+- [x] Windows：选型并接入 WinFsp Rust bindings
+- [x] Windows：实现盘符/目录挂载、占用检测和安全卸载
 - [ ] Windows：处理大小写、Windows 文件名限制和文件属性
 - [ ] Linux：接入 FUSE3，完成挂载、卸载和权限映射
 - [ ] macOS：验证 macFUSE API、签名、公证和卸载流程
@@ -60,15 +60,18 @@
 
 ## P1：配置与凭据
 
-- [ ] 使用系统凭据库保存密码和私钥口令，禁止写入配置文件或日志
+- [x] 使用 Windows Credential Manager 保存 WebDAV 密码，禁止写入配置文件或日志
+- [x] 使用 TOTP 2FA 保护应用启动和凭据操作
 - [ ] 实现配置迁移、导入与导出（导出不包含凭据）
-- [ ] 启动时恢复 `auto_mount` 配置
-- [ ] 增加连接测试及远程路径选择
+- [x] 解锁时恢复 `auto_mount` 及上次仍挂载且已保存凭据的映射
+- [x] 增加 WebDAV 连接测试
+- [ ] 增加远程路径选择
 - [ ] 校验重复盘符、重复挂载目录和非法平台路径
 
 ## P2：桌面体验
 
-- [ ] 增加挂载 / 卸载操作和实时状态
+- [x] 增加挂载 / 卸载操作和实时状态
+- [x] 锁定时自动卸载，解锁后恢复上次挂载状态
 - [ ] 增加系统托盘、开机启动和后台运行选项
 - [ ] 增加结构化日志、日志轮转和诊断包导出
 - [ ] 增加更新机制和崩溃恢复

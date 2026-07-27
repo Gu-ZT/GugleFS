@@ -20,4 +20,10 @@ guglefs-core = { path = "../crates/guglefs-core" }
 guglefs-mount = { path = "../crates/guglefs-mount" }
 guglefs-remote = { path = "../crates/guglefs-remote" }
 serde.workspace = true
+serde_json.workspace = true
 tauri = { version = "2", features = [] }
+tokio.workspace = true
+totp-rs = { version = "5.7.2", features = ["gen_secret", "otpauth", "qr", "zeroize"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6.3", features = ["windows-native"] }
