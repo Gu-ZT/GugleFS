@@ -23,6 +23,12 @@ pub struct DirectoryEntry {
     pub metadata: FileMetadata,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileTimes {
+    pub accessed: Option<String>,
+    pub modified: Option<String>,
+}
+
 #[async_trait]
 pub trait RemoteFileSystem: Send + Sync {
     async fn connect(&self) -> EngineResult<()>;
@@ -46,6 +52,10 @@ pub trait RemoteFileSystem: Send + Sync {
         Err(EngineError::NotImplemented("remote write".into()))
     }
 
+    async fn create_file(&self, path: &str) -> EngineResult<()> {
+        self.write(path, 0, Vec::new()).await.map(|_| ())
+    }
+
     async fn create_dir(&self, _path: &str) -> EngineResult<()> {
         Err(EngineError::NotImplemented(
             "remote directory creation".into(),
@@ -58,6 +68,22 @@ pub trait RemoteFileSystem: Send + Sync {
 
     async fn rename(&self, _from: &str, _to: &str) -> EngineResult<()> {
         Err(EngineError::NotImplemented("remote rename".into()))
+    }
+
+    async fn truncate(&self, path: &str, size: u64) -> EngineResult<()> {
+        if size == 0 {
+            self.write(path, 0, Vec::new()).await.map(|_| ())
+        } else {
+            Err(EngineError::NotImplemented("remote truncate".into()))
+        }
+    }
+
+    async fn set_times(&self, _path: &str, _times: FileTimes) -> EngineResult<()> {
+        Err(EngineError::NotImplemented("remote timestamps".into()))
+    }
+
+    async fn flush(&self, _path: &str) -> EngineResult<()> {
+        Ok(())
     }
 }
 

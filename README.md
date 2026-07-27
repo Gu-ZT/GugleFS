@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src=".idea/icon.png" style="width: 256px; height: 256px;">
+<img src=".idea/icon.png" style="width: 256px; height: 256px;" alt="Icon">
 
 # GugleFS
 
@@ -14,7 +14,7 @@ GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端，目标�
 - 文件系统引擎：Rust
 - 前端包管理器：pnpm
 
-> 当前仓库已具备配置窗口、版本化配置持久化和 Rust workspace 骨架。真实远程访问、凭据库和系统挂载仍在实现中，进度见 `TODO.md`。
+> 当前仓库已具备配置窗口、版本化配置持久化、核心 VFS 语义和 WebDAV 基础操作。FTP/SFTP、凭据库和系统挂载仍在实现中，进度见 `TODO.md`。
 
 ## 目录结构
 

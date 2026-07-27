@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use guglefs_core::{
-    AuthMethod, DirectoryEntry, EngineError, EngineResult, EntryKind, FileMetadata, MappingConfig,
-    Protocol, RemoteFileSystem,
+    AuthMethod, DirectoryEntry, EngineError, EngineResult, EntryKind, FileMetadata, FsErrorCode,
+    MappingConfig, Protocol, RemoteFileSystem,
 };
 use quick_xml::{events::Event, Reader};
 use reqwest::{header, Client, Method, RequestBuilder, StatusCode, Url};
@@ -82,16 +82,29 @@ impl WebDavFileSystem {
         }
     }
 
+    fn vfs_path(&self, href: &str) -> Option<String> {
+        let resource_path = normalize_path(href);
+        let base_path = normalize_path(self.base_url.path());
+        if resource_path == base_path {
+            return Some("/".into());
+        }
+        let prefix = if base_path == "/" {
+            "/".to_string()
+        } else {
+            format!("{base_path}/")
+        };
+        resource_path
+            .strip_prefix(&prefix)
+            .map(|suffix| format!("/{suffix}"))
+    }
+
     async fn finish(response: reqwest::Response, operation: &str) -> EngineResult<()> {
         if response.status().is_success() {
             return Ok(());
         }
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        Err(EngineError::Remote(format!(
-            "WebDAV {operation} failed with {status}: {}",
-            truncate_body(&body)
-        )))
+        Err(status_error(status, operation, &body))
     }
 
     async fn propfind(&self, path: &str, depth: &str) -> EngineResult<Vec<Resource>> {
@@ -104,10 +117,9 @@ impl WebDavFileSystem {
             .await
             .map_err(|error| EngineError::Remote(format!("WebDAV PROPFIND request: {error}")))?;
         if response.status() != StatusCode::MULTI_STATUS {
-            return Err(EngineError::Remote(format!(
-                "WebDAV PROPFIND failed with {}",
-                response.status()
-            )));
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(status_error(status, "PROPFIND", &body));
         }
         let body = response
             .bytes()
@@ -148,7 +160,7 @@ impl RemoteFileSystem for WebDavFileSystem {
             .await?
             .into_iter()
             .filter_map(|resource| {
-                let resource_path = normalize_path(&resource.href);
+                let resource_path = self.vfs_path(&resource.href)?;
                 if resource_path == requested {
                     return None;
                 }
@@ -180,10 +192,9 @@ impl RemoteFileSystem for WebDavFileSystem {
             .await
             .map_err(|error| EngineError::Remote(format!("WebDAV GET request: {error}")))?;
         if !response.status().is_success() {
-            return Err(EngineError::Remote(format!(
-                "WebDAV GET failed with {}",
-                response.status()
-            )));
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(status_error(status, "GET", &body));
         }
         response
             .bytes()
@@ -352,6 +363,26 @@ fn truncate_body(body: &str) -> String {
     body.chars().take(MAX_BODY_LENGTH).collect()
 }
 
+fn status_error(status: StatusCode, operation: &str, body: &str) -> EngineError {
+    let message = format!(
+        "WebDAV {operation} failed with {status}: {}",
+        truncate_body(body)
+    );
+    let code = match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => FsErrorCode::PermissionDenied,
+        StatusCode::NOT_FOUND | StatusCode::GONE => FsErrorCode::NotFound,
+        StatusCode::METHOD_NOT_ALLOWED if operation == "create directory" => {
+            FsErrorCode::AlreadyExists
+        }
+        StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED => FsErrorCode::Unsupported,
+        StatusCode::PRECONDITION_FAILED => FsErrorCode::AlreadyExists,
+        StatusCode::CONFLICT | StatusCode::RANGE_NOT_SATISFIABLE => FsErrorCode::InvalidArgument,
+        StatusCode::LOCKED => FsErrorCode::Busy,
+        _ => FsErrorCode::RemoteIo,
+    };
+    EngineError::filesystem(code, message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,5 +399,33 @@ mod tests {
         assert_eq!(resources.len(), 2);
         assert_eq!(resources[0].metadata.kind, EntryKind::Directory);
         assert_eq!(resources[1].metadata.size, 12);
+    }
+
+    #[test]
+    fn maps_http_statuses_to_vfs_error_codes() {
+        assert_eq!(
+            status_error(StatusCode::NOT_FOUND, "GET", "").code(),
+            FsErrorCode::NotFound
+        );
+        assert_eq!(
+            status_error(StatusCode::LOCKED, "PUT", "").code(),
+            FsErrorCode::Busy
+        );
+        assert_eq!(
+            status_error(StatusCode::BAD_GATEWAY, "GET", "").code(),
+            FsErrorCode::RemoteIo
+        );
+    }
+
+    #[test]
+    fn converts_webdav_hrefs_to_vfs_paths() {
+        let file_system = WebDavFileSystem::new("https://example.test/remote", None, None).unwrap();
+
+        assert_eq!(file_system.vfs_path("/remote/"), Some("/".into()));
+        assert_eq!(
+            file_system.vfs_path("https://example.test/remote/docs/file.txt"),
+            Some("/docs/file.txt".into())
+        );
+        assert_eq!(file_system.vfs_path("/other/file.txt"), None);
     }
 }
