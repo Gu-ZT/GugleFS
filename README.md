@@ -14,7 +14,7 @@ GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端，目标�
 - 文件系统引擎：Rust
 - 前端包管理器：pnpm
 
-> 当前仓库是项目骨架。配置窗口和内存态配置管理已接通，真实远程访问、配置持久化及系统挂载尚未实现，进度见 `TODO.md`。
+> 当前仓库已具备配置窗口、版本化配置持久化和 Rust workspace 骨架。真实远程访问、凭据库和系统挂载仍在实现中，进度见 `TODO.md`。
 
 ## 目录结构
 
@@ -62,3 +62,5 @@ pnpm check
 
 `MappingConfig` 只保存 `credential_id`，不保存密码或私钥口令。后续凭据应进入 Windows Credential Manager、macOS Keychain 或
 Linux Secret Service，并由 Rust 引擎读取。
+
+映射配置会保存到 Tauri 的应用配置目录下的 `mappings.json`，文件包含 `schemaVersion`，运行时挂载状态不会写入配置文件。
