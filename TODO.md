@@ -12,7 +12,7 @@
 - [x] 使用版本化 schema 持久化映射配置
 - [x] 添加应用图标和安装包元数据
 - [ ] 配置 Windows/macOS/Linux 签名与公证
-- [ ] 配置 CI
+- [x] 配置 push 预发布和 GitHub Release 附件上传 CI
 
 ## P1：核心文件系统语义
 
@@ -82,11 +82,12 @@
 
 ## P2：质量与发布
 
-- [ ] CI 覆盖 Windows、Linux、macOS 的格式检查、Clippy、测试和前端构建
-- [ ] 增加 `rustfmt`、Clippy 和前端静态检查门禁
+- [ ] CI 覆盖 Linux、macOS 的格式检查、Clippy、测试和前端构建
+- [x] 增加 Windows `rustfmt`、Clippy、测试和前端静态检查门禁
 - [ ] 使用本地 FTP / SFTP 容器执行协议集成测试
 - [ ] 使用内存后端执行 WinFsp / FUSE 一致性测试
 - [ ] 压测大文件、海量小文件、并发读写和高延迟网络
+- [x] 建立未签名 Windows x64 NSIS/MSI 自动打包流程
 - [ ] 建立 Windows 签名、macOS 签名公证和 Linux 打包流程
 - [ ] 编写威胁模型，审查凭据、路径穿越、符号链接与日志泄漏风险
 

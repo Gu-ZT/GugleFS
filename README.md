@@ -73,3 +73,9 @@ SFTP 支持密码认证，以及 OpenSSH/PEM 私钥认证。私钥可以选择�
 `MappingConfig` 只保存凭据 ID、本地私钥路径、粘贴私钥引用和已确认的 SSH 主机指纹，不保存密码、私钥口令或粘贴私钥正文。FTP/FTPS、SFTP、WebDAV 凭据和 TOTP 密钥保存在 Windows Credential Manager；粘贴私钥按唯一 ID 分块保存，以适配单条 Windows 凭据的大小限制。连接测试和挂载中的认证材料只通过本次 IPC 请求传递，不会写入配置、日志或 IPC 返回值。macOS Keychain 和 Linux Secret Service 尚未接入。
 
 映射配置会保存到 Tauri 应用配置目录下的 `mappings.json`，文件包含 `schemaVersion`。用于解锁后恢复的映射 ID 单独保存在 `mount-state.json`，运行时错误和凭据内容不会写入这两个文件。
+
+## CI 与发布
+
+推送到 `main` 后，GitHub Actions 会先在 Windows 执行格式检查、Clippy、Rust 测试和前端生产构建，再创建 `<version>+build.<run_number>` 预发布，并上传 Windows x64 的 NSIS/MSI 安装文件。发布 GitHub Release 时，同一 workflow 会采用 release tag 作为应用版本并将安装文件附加到该 release。
+
+当前自动发布仅构建 Windows x64，因为 WinFsp 是现阶段唯一完成的系统挂载驱动。安装包暂不内置 WinFsp，使用挂载功能前仍需按上文安装 WinFsp 2.1 运行时。

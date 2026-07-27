@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  quality:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: windows-quality
+
+      - run: pnpm install --frozen-lockfile
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: pnpm run web:build
+
+  prepare:
+    needs: quality
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.info.outputs.release_id }}
+      tag: ${{ steps.info.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release
+        id: info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            RELEASE_ID="${{ github.event.release.id }}"
+          else
+            VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+            TAG="${VERSION}+build.${{ github.run_number }}"
+            RELEASE_ID=$(gh api --paginate "repos/$REPO/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)
+            if [ -n "$RELEASE_ID" ]; then
+              gh api -X PATCH "repos/$REPO/releases/$RELEASE_ID" \
+                -f target_commitish="$SHA" \
+                -f name="$TAG" \
+                -F draft=false \
+                -F prerelease=true \
+                --silent
+            else
+              RELEASE_ID=$(gh api "repos/$REPO/releases" \
+                -f tag_name="$TAG" \
+                -f target_commitish="$SHA" \
+                -f name="$TAG" \
+                -F draft=false \
+                -F prerelease=true \
+                -F generate_release_notes=true \
+                --jq .id)
+            fi
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set app version from release tag
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#v}" node -e "
+            const fs = require('fs');
+            const path = 'src-tauri/tauri.conf.json';
+            const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+            config.version = process.env.VERSION;
+            fs.writeFileSync(path, JSON.stringify(config, null, 2));
+          "
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: windows-x86_64-release
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          args: --target x86_64-pc-windows-msvc
