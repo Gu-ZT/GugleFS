@@ -10,11 +10,6 @@ services:
     ports:
       - "2121:21"
       - "21000-21010:21000-21010"
-    healthcheck:
-      test: ["CMD-SHELL", "pure-pw show guglefs >/dev/null 2>&1 && pgrep -x pure-ftpd >/dev/null"]
-      interval: 1s
-      timeout: 3s
-      retries: 60
   sftp:
     image: atmoz/sftp:alpine
     command: "guglefs:guglefs-test:1001::upload"
