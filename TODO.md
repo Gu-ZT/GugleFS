@@ -35,6 +35,7 @@
 - [x] FTP：使用被动模式和 MLST/MLSD，并为旧服务器回退解析 `LIST`
 - [x] SFTP：支持密码、本地私钥和粘贴私钥认证
 - [x] SFTP：允许选择 `ssh-keygen` 生成的无扩展名私钥文件
+- [x] SFTP：空闲连接发送 SSH keepalive，session 失效后自动重连并安全重试
 - [ ] SFTP：支持 SSH Agent
 - [x] SFTP：实现 SHA-256 主机指纹固定和首次连接确认流程
 - [ ] SFTP：支持导入 OpenSSH `known_hosts`

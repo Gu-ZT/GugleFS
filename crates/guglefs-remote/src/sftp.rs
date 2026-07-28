@@ -1,5 +1,7 @@
 use std::{
+    future::Future,
     io::SeekFrom,
+    pin::Pin,
     sync::{Arc, Mutex as StdMutex},
     time::{Duration, UNIX_EPOCH},
 };
@@ -21,7 +23,7 @@ use tokio::{
 
 use crate::proxy::{connect_target, proxy_for_target, system_proxy, ProxyConfig};
 
-const SSH_TIMEOUT: Duration = Duration::from_secs(30);
+const SSH_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
 enum SftpAuth {
     Password(String),
@@ -69,6 +71,8 @@ struct SftpConnection {
     ssh: client::Handle<HostKeyVerifier>,
     sftp: SftpSession,
 }
+
+type SftpOperation<'a, T> = Pin<Box<dyn Future<Output = Result<T, SftpError>> + Send + 'a>>;
 
 pub struct SftpFileSystem {
     host: String,
@@ -234,10 +238,53 @@ impl SftpFileSystem {
         &self,
     ) -> EngineResult<tokio::sync::MutexGuard<'_, Option<SftpConnection>>> {
         let mut connection = self.connection.lock().await;
+        if connection
+            .as_ref()
+            .is_some_and(|connection| connection.ssh.is_closed())
+        {
+            *connection = None;
+        }
         if connection.is_none() {
             *connection = Some(self.open_connection().await?);
         }
         Ok(connection)
+    }
+
+    async fn execute<T, F>(
+        &self,
+        operation: &str,
+        retry_after_reconnect: bool,
+        mut callback: F,
+    ) -> EngineResult<T>
+    where
+        T: Send,
+        F: for<'a> FnMut(&'a SftpSession) -> SftpOperation<'a, T> + Send,
+    {
+        let attempts = if retry_after_reconnect { 2 } else { 1 };
+        for attempt in 0..attempts {
+            let mut connection = self.connection().await?;
+            let result = callback(
+                &connection
+                    .as_ref()
+                    .expect("SFTP connection initialized")
+                    .sftp,
+            )
+            .await;
+            match result {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    let reconnect = reconnectable_sftp_error(&error);
+                    if reconnect {
+                        *connection = None;
+                    }
+                    if reconnect && attempt + 1 < attempts {
+                        continue;
+                    }
+                    return Err(sftp_error(operation, error));
+                }
+            }
+        }
+        unreachable!("SFTP operations always execute at least once")
     }
 
     fn remote_path(&self, path: &str) -> String {
@@ -256,15 +303,11 @@ impl SftpFileSystem {
 impl RemoteFileSystem for SftpFileSystem {
     async fn connect(&self) -> EngineResult<()> {
         let remote_path = self.root.clone();
-        self.connection()
-            .await?
-            .as_ref()
-            .expect("SFTP connection initialized")
-            .sftp
-            .metadata(remote_path)
-            .await
-            .map(|_| ())
-            .map_err(|error| sftp_error("read root metadata", error))
+        self.execute("read root metadata", true, move |sftp| {
+            let remote_path = remote_path.clone();
+            Box::pin(async move { sftp.metadata(remote_path).await.map(|_| ()) })
+        })
+        .await
     }
 
     async fn disconnect(&self) -> EngineResult<()> {
@@ -281,42 +324,39 @@ impl RemoteFileSystem for SftpFileSystem {
 
     async fn metadata(&self, path: &str) -> EngineResult<FileMetadata> {
         let remote_path = self.remote_path(path);
-        let connection = self.connection().await?;
-        connection
-            .as_ref()
-            .expect("SFTP connection initialized")
-            .sftp
-            .metadata(remote_path)
-            .await
-            .map(file_metadata)
-            .map_err(|error| sftp_error("read metadata", error))
+        self.execute("read metadata", true, move |sftp| {
+            let remote_path = remote_path.clone();
+            Box::pin(async move { sftp.metadata(remote_path).await.map(file_metadata) })
+        })
+        .await
     }
 
     async fn read_dir(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
         let remote_path = self.remote_path(path);
-        let connection = self.connection().await?;
-        let entries = connection
-            .as_ref()
-            .expect("SFTP connection initialized")
-            .sftp
-            .read_dir(remote_path)
-            .await
-            .map_err(|error| sftp_error("read directory", error))?;
-        Ok(entries
-            .map(|entry| {
-                let name = entry.file_name();
-                let entry_path = if path == "/" {
-                    format!("/{name}")
-                } else {
-                    format!("{}/{name}", path.trim_end_matches('/'))
-                };
-                DirectoryEntry {
-                    path: entry_path,
-                    name,
-                    metadata: file_metadata(entry.metadata()),
-                }
+        let vfs_path = path.to_string();
+        self.execute("read directory", true, move |sftp| {
+            let remote_path = remote_path.clone();
+            let vfs_path = vfs_path.clone();
+            Box::pin(async move {
+                let entries = sftp.read_dir(remote_path).await?;
+                Ok(entries
+                    .map(|entry| {
+                        let name = entry.file_name();
+                        let entry_path = if vfs_path == "/" {
+                            format!("/{name}")
+                        } else {
+                            format!("{}/{name}", vfs_path.trim_end_matches('/'))
+                        };
+                        DirectoryEntry {
+                            path: entry_path,
+                            name,
+                            metadata: file_metadata(entry.metadata()),
+                        }
+                    })
+                    .collect())
             })
-            .collect())
+        })
+        .await
     }
 
     async fn read_range(&self, path: &str, offset: u64, length: u64) -> EngineResult<Vec<u8>> {
@@ -324,126 +364,110 @@ impl RemoteFileSystem for SftpFileSystem {
             return Ok(Vec::new());
         }
         let remote_path = self.remote_path(path);
-        let connection = self.connection().await?;
-        let mut file = connection
-            .as_ref()
-            .expect("SFTP connection initialized")
-            .sftp
-            .open(remote_path)
-            .await
-            .map_err(|error| sftp_error("open file for reading", error))?;
-        file.seek(SeekFrom::Start(offset))
-            .await
-            .map_err(|error| EngineError::Remote(format!("seek SFTP file: {error}")))?;
-        let capacity = usize::try_from(length.min(1024 * 1024)).unwrap_or(1024 * 1024);
-        let mut data = Vec::with_capacity(capacity);
-        (&mut file)
-            .take(length)
-            .read_to_end(&mut data)
-            .await
-            .map_err(|error| EngineError::Remote(format!("read SFTP file: {error}")))?;
-        file.shutdown()
-            .await
-            .map_err(|error| EngineError::Remote(format!("close SFTP file: {error}")))?;
-        Ok(data)
+        self.execute("read file", true, move |sftp| {
+            let remote_path = remote_path.clone();
+            Box::pin(async move {
+                let mut file = sftp.open(remote_path).await?;
+                file.seek(SeekFrom::Start(offset))
+                    .await
+                    .map_err(SftpError::from)?;
+                let capacity = usize::try_from(length.min(1024 * 1024)).unwrap_or(1024 * 1024);
+                let mut data = Vec::with_capacity(capacity);
+                (&mut file)
+                    .take(length)
+                    .read_to_end(&mut data)
+                    .await
+                    .map_err(SftpError::from)?;
+                file.shutdown().await.map_err(SftpError::from)?;
+                Ok(data)
+            })
+        })
+        .await
     }
 
     async fn write(&self, path: &str, offset: u64, data: Vec<u8>) -> EngineResult<u64> {
         let remote_path = self.remote_path(path);
         let written = data.len() as u64;
-        let connection = self.connection().await?;
-        let mut file = connection
-            .as_ref()
-            .expect("SFTP connection initialized")
-            .sftp
-            .open_with_flags(remote_path, OpenFlags::WRITE)
-            .await
-            .map_err(|error| sftp_error("open file for writing", error))?;
-        file.seek(SeekFrom::Start(offset))
-            .await
-            .map_err(|error| EngineError::Remote(format!("seek SFTP file: {error}")))?;
-        file.write_all(&data)
-            .await
-            .map_err(|error| EngineError::Remote(format!("write SFTP file: {error}")))?;
-        file.flush()
-            .await
-            .map_err(|error| EngineError::Remote(format!("flush SFTP file: {error}")))?;
-        file.shutdown()
-            .await
-            .map_err(|error| EngineError::Remote(format!("close SFTP file: {error}")))?;
-        Ok(written)
+        self.execute("write file", true, move |sftp| {
+            let remote_path = remote_path.clone();
+            let data = data.clone();
+            Box::pin(async move {
+                let mut file = sftp.open_with_flags(remote_path, OpenFlags::WRITE).await?;
+                file.seek(SeekFrom::Start(offset))
+                    .await
+                    .map_err(SftpError::from)?;
+                file.write_all(&data).await.map_err(SftpError::from)?;
+                file.flush().await.map_err(SftpError::from)?;
+                file.shutdown().await.map_err(SftpError::from)?;
+                Ok(written)
+            })
+        })
+        .await
     }
 
     async fn create_file(&self, path: &str) -> EngineResult<()> {
         let remote_path = self.remote_path(path);
-        let connection = self.connection().await?;
-        let mut file = connection
-            .as_ref()
-            .expect("SFTP connection initialized")
-            .sftp
-            .open_with_flags(
-                remote_path,
-                OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
-            )
-            .await
-            .map_err(|error| sftp_error("create file", error))?;
-        file.shutdown()
-            .await
-            .map_err(|error| EngineError::Remote(format!("close new SFTP file: {error}")))
+        self.execute("create file", false, move |sftp| {
+            let remote_path = remote_path.clone();
+            Box::pin(async move {
+                let mut file = sftp
+                    .open_with_flags(
+                        remote_path,
+                        OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+                    )
+                    .await?;
+                file.shutdown().await.map_err(SftpError::from)
+            })
+        })
+        .await
     }
 
     async fn create_dir(&self, path: &str) -> EngineResult<()> {
         let remote_path = self.remote_path(path);
-        let connection = self.connection().await?;
-        connection
-            .as_ref()
-            .expect("SFTP connection initialized")
-            .sftp
-            .create_dir(remote_path)
-            .await
-            .map_err(|error| sftp_error("create directory", error))
+        self.execute("create directory", false, move |sftp| {
+            let remote_path = remote_path.clone();
+            Box::pin(async move { sftp.create_dir(remote_path).await })
+        })
+        .await
     }
 
     async fn remove(&self, path: &str, directory: bool) -> EngineResult<()> {
         let remote_path = self.remote_path(path);
-        let connection = self.connection().await?;
-        let sftp = &connection
-            .as_ref()
-            .expect("SFTP connection initialized")
-            .sftp;
-        let result = if directory {
-            sftp.remove_dir(remote_path).await
-        } else {
-            sftp.remove_file(remote_path).await
-        };
-        result.map_err(|error| sftp_error("remove", error))
+        self.execute("remove", false, move |sftp| {
+            let remote_path = remote_path.clone();
+            Box::pin(async move {
+                if directory {
+                    sftp.remove_dir(remote_path).await
+                } else {
+                    sftp.remove_file(remote_path).await
+                }
+            })
+        })
+        .await
     }
 
     async fn rename(&self, from: &str, to: &str) -> EngineResult<()> {
         let from = self.remote_path(from);
         let to = self.remote_path(to);
-        let connection = self.connection().await?;
-        connection
-            .as_ref()
-            .expect("SFTP connection initialized")
-            .sftp
-            .rename(from, to)
-            .await
-            .map_err(|error| sftp_error("rename", error))
+        self.execute("rename", false, move |sftp| {
+            let from = from.clone();
+            let to = to.clone();
+            Box::pin(async move { sftp.rename(from, to).await })
+        })
+        .await
     }
 
     async fn truncate(&self, path: &str, size: u64) -> EngineResult<()> {
         let remote_path = self.remote_path(path);
-        let connection = self.connection().await?;
-        let mut attributes = FileAttributes::empty();
-        attributes.size = Some(size);
-        connection
-            .as_ref()
-            .expect("SFTP connection initialized")
-            .sftp
-            .set_metadata(remote_path, attributes)
-            .await
-            .map_err(|error| sftp_error("truncate", error))
+        self.execute("truncate", true, move |sftp| {
+            let remote_path = remote_path.clone();
+            Box::pin(async move {
+                let mut attributes = FileAttributes::empty();
+                attributes.size = Some(size);
+                sftp.set_metadata(remote_path, attributes).await
+            })
+        })
+        .await
     }
 }
 
@@ -477,7 +501,9 @@ pub async fn inspect_host_key(
 
 fn ssh_config() -> client::Config {
     client::Config {
-        inactivity_timeout: Some(SSH_TIMEOUT),
+        keepalive_interval: Some(SSH_KEEPALIVE_INTERVAL),
+        keepalive_max: 3,
+        nodelay: true,
         ..Default::default()
     }
 }
@@ -525,6 +551,16 @@ fn sftp_error(operation: &str, error: SftpError) -> EngineError {
     EngineError::filesystem(code, format!("SFTP {operation}: {error}"))
 }
 
+fn reconnectable_sftp_error(error: &SftpError) -> bool {
+    matches!(
+        error,
+        SftpError::IO(_)
+            | SftpError::Timeout
+            | SftpError::UnexpectedPacket
+            | SftpError::UnexpectedBehavior(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,5 +580,32 @@ mod tests {
             language_tag: "en".into(),
         });
         assert_eq!(sftp_error("metadata", error).code(), FsErrorCode::NotFound);
+    }
+
+    #[test]
+    fn reconnects_only_for_transport_and_session_errors() {
+        assert!(reconnectable_sftp_error(&SftpError::UnexpectedBehavior(
+            "session closed".into()
+        )));
+        assert!(reconnectable_sftp_error(&SftpError::Timeout));
+        assert!(!reconnectable_sftp_error(&SftpError::Limited(
+            "packet limit".into()
+        )));
+        assert!(!reconnectable_sftp_error(&SftpError::Status(
+            russh_sftp::protocol::Status {
+                id: 1,
+                status_code: StatusCode::NoSuchFile,
+                error_message: "missing".into(),
+                language_tag: "en".into(),
+            }
+        )));
+    }
+
+    #[test]
+    fn keeps_idle_ssh_sessions_alive() {
+        let config = ssh_config();
+        assert_eq!(config.inactivity_timeout, None);
+        assert_eq!(config.keepalive_interval, Some(SSH_KEEPALIVE_INTERVAL));
+        assert_eq!(config.keepalive_max, 3);
     }
 }
