@@ -13,7 +13,7 @@ GugleFS is a cross-platform Tauri desktop client that mounts remote FTP, SFTP, a
 - Windows: WinFsp 2.1
 - Linux: FUSE3
 - macOS: macFUSE 5
-- Desktop UI: Tauri, TypeScript, and Vite
+- Desktop UI: Tauri, Vue 3, TypeScript, and Vite
 - Filesystem engine: Rust
 - Package manager: pnpm
 

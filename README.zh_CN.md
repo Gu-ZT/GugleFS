@@ -12,7 +12,7 @@ GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端，目标�
 
 - Windows：WinFsp
 - Linux / macOS：FUSE
-- 配置界面：Tauri + TypeScript + Vite
+- 配置界面：Tauri + Vue 3 + TypeScript + Vite
 - 文件系统引擎：Rust
 - 前端包管理器：pnpm
 
