@@ -10,6 +10,7 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 - Added sanitized JSONL operation logs with rotation and user-exportable JSON diagnostic reports.
 - Added cross-platform SSH Agent authentication and verified OpenSSH `known_hosts` import for SFTP mappings.
 - Added conditional WebDAV writes using ETag/Last-Modified validators, conflict detection, safe offset-zero writes, and nonzero truncation.
+- Added WebDAV Digest, Bearer Token, anonymous, and local PEM client-certificate authentication.
 
 ## [0.8.0] - 2026-07-29
 

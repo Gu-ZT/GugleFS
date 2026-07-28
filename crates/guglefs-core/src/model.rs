@@ -8,6 +8,17 @@ pub enum Protocol {
     Webdav,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebDavAuthMethod {
+    #[default]
+    Basic,
+    Digest,
+    Bearer,
+    ClientCertificate,
+    Anonymous,
+}
+
 impl Protocol {
     pub const fn default_port(self) -> u16 {
         match self {
@@ -56,10 +67,35 @@ pub struct MappingConfig {
     pub sftp_totp_required: bool,
     #[serde(default)]
     pub ignore_system_proxy: bool,
+    #[serde(default)]
+    pub webdav_auth: WebDavAuthMethod,
+    #[serde(default)]
+    pub webdav_client_certificate_path: Option<String>,
     pub auto_mount: bool,
 }
 
 impl MappingConfig {
+    pub fn migrated(mut self) -> Self {
+        let legacy_anonymous_webdav = self.protocol == Protocol::Webdav
+            && self.webdav_auth == WebDavAuthMethod::Basic
+            && self
+                .username
+                .as_deref()
+                .is_none_or(|username| username.trim().is_empty())
+            && matches!(
+                &self.auth,
+                AuthMethod::Anonymous
+                    | AuthMethod::Password {
+                        credential_id: None
+                    }
+            );
+        if legacy_anonymous_webdav {
+            self.auth = AuthMethod::Anonymous;
+            self.webdav_auth = WebDavAuthMethod::Anonymous;
+        }
+        self
+    }
+
     pub fn validate(&self) -> crate::EngineResult<()> {
         if self.id.trim().is_empty() {
             return Err(crate::EngineError::InvalidConfig(
@@ -108,10 +144,61 @@ impl MappingConfig {
                 "SSH Agent authentication is only supported for SFTP mappings".into(),
             ));
         }
+        if self.protocol != Protocol::Webdav {
+            if self.webdav_auth != WebDavAuthMethod::Basic
+                || self.webdav_client_certificate_path.is_some()
+            {
+                return Err(crate::EngineError::InvalidConfig(
+                    "WebDAV authentication settings require a WebDAV mapping".into(),
+                ));
+            }
+        } else {
+            match self.webdav_auth {
+                WebDavAuthMethod::Basic | WebDavAuthMethod::Digest => {
+                    if !matches!(&self.auth, AuthMethod::Password { .. }) {
+                        return Err(crate::EngineError::InvalidConfig(
+                            "WebDAV password authentication requires a stored credential".into(),
+                        ));
+                    }
+                    if self
+                        .username
+                        .as_deref()
+                        .is_none_or(|username| username.trim().is_empty())
+                    {
+                        return Err(crate::EngineError::InvalidConfig(
+                            "WebDAV Basic and Digest authentication require a username".into(),
+                        ));
+                    }
+                }
+                WebDavAuthMethod::Bearer => {
+                    if !matches!(&self.auth, AuthMethod::Password { .. }) {
+                        return Err(crate::EngineError::InvalidConfig(
+                            "WebDAV Bearer authentication requires a stored token".into(),
+                        ));
+                    }
+                }
+                WebDavAuthMethod::ClientCertificate => {
+                    if !matches!(&self.auth, AuthMethod::Anonymous) {
+                        return Err(crate::EngineError::InvalidConfig(
+                            "WebDAV client certificate authentication cannot store a password"
+                                .into(),
+                        ));
+                    }
+                }
+                WebDavAuthMethod::Anonymous => {
+                    if !matches!(&self.auth, AuthMethod::Anonymous) {
+                        return Err(crate::EngineError::InvalidConfig(
+                            "anonymous WebDAV authentication cannot store a credential".into(),
+                        ));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
     pub fn portable(mut self) -> Self {
+        self = self.migrated();
         self.auth = match self.auth {
             AuthMethod::Password { .. } => AuthMethod::Password {
                 credential_id: None,
@@ -124,6 +211,7 @@ impl MappingConfig {
             AuthMethod::SshAgent => AuthMethod::SshAgent,
             AuthMethod::Anonymous => AuthMethod::Anonymous,
         };
+        self.webdav_client_certificate_path = None;
         self.auto_mount = false;
         self
     }
@@ -148,7 +236,7 @@ pub struct MappingRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthMethod, MappingConfig, Protocol};
+    use super::{AuthMethod, MappingConfig, Protocol, WebDavAuthMethod};
 
     #[test]
     fn protocols_have_expected_default_ports() {
@@ -173,6 +261,8 @@ mod tests {
             host_key_fingerprint: None,
             sftp_totp_required: false,
             ignore_system_proxy: false,
+            webdav_auth: WebDavAuthMethod::Anonymous,
+            webdav_client_certificate_path: None,
             auto_mount: false,
         };
         config.host = "files.example.com@attacker.test".into();
@@ -200,6 +290,33 @@ mod tests {
         .unwrap();
 
         assert!(!config.sftp_totp_required);
+        assert_eq!(config.webdav_auth, WebDavAuthMethod::Basic);
+        assert!(config.webdav_client_certificate_path.is_none());
+    }
+
+    #[test]
+    fn migrates_the_legacy_anonymous_webdav_representation() {
+        let config: MappingConfig = serde_json::from_value(serde_json::json!({
+            "id": "id",
+            "name": "name",
+            "protocol": "webdav",
+            "host": "files.example.com",
+            "port": 443,
+            "username": null,
+            "auth": { "type": "password", "credential_id": null },
+            "remotePath": "/",
+            "mountPoint": "/mnt/files",
+            "ftpTls": false,
+            "hostKeyFingerprint": null,
+            "ignoreSystemProxy": false,
+            "autoMount": false
+        }))
+        .unwrap();
+
+        let migrated = config.migrated();
+        assert_eq!(migrated.webdav_auth, WebDavAuthMethod::Anonymous);
+        assert_eq!(migrated.auth, AuthMethod::Anonymous);
+        assert!(migrated.validate().is_ok());
     }
 
     #[test]
@@ -218,6 +335,8 @@ mod tests {
             host_key_fingerprint: Some("SHA256:test".into()),
             sftp_totp_required: false,
             ignore_system_proxy: false,
+            webdav_auth: WebDavAuthMethod::Basic,
+            webdav_client_certificate_path: None,
             auto_mount: true,
         };
 
@@ -250,6 +369,8 @@ mod tests {
             host_key_fingerprint: Some("SHA256:test".into()),
             sftp_totp_required: false,
             ignore_system_proxy: false,
+            webdav_auth: WebDavAuthMethod::Basic,
+            webdav_client_certificate_path: None,
             auto_mount: true,
         };
 
@@ -263,10 +384,51 @@ mod tests {
                 credential_id: None,
             }
         );
+        assert!(portable.webdav_client_certificate_path.is_none());
         assert!(!portable.auto_mount);
         assert_eq!(
             portable.host_key_fingerprint.as_deref(),
             Some("SHA256:test")
         );
+    }
+
+    #[test]
+    fn validates_webdav_authentication_modes() {
+        let mut config = MappingConfig {
+            id: "id".into(),
+            name: "name".into(),
+            protocol: Protocol::Webdav,
+            host: "files.example.com".into(),
+            port: 443,
+            username: Some("user".into()),
+            auth: AuthMethod::Password {
+                credential_id: None,
+            },
+            remote_path: "/".into(),
+            mount_point: "/mnt/files".into(),
+            ftp_tls: false,
+            host_key_fingerprint: None,
+            sftp_totp_required: false,
+            ignore_system_proxy: false,
+            webdav_auth: WebDavAuthMethod::Digest,
+            webdav_client_certificate_path: None,
+            auto_mount: false,
+        };
+
+        assert!(config.validate().is_ok());
+        config.username = None;
+        assert!(config.validate().is_err());
+
+        config.webdav_auth = WebDavAuthMethod::Bearer;
+        assert!(config.validate().is_ok());
+
+        config.webdav_auth = WebDavAuthMethod::ClientCertificate;
+        config.auth = AuthMethod::Anonymous;
+        config.webdav_client_certificate_path = Some("client-identity.pem".into());
+        assert!(config.validate().is_ok());
+
+        let portable = config.portable();
+        assert_eq!(portable.webdav_auth, WebDavAuthMethod::ClientCertificate);
+        assert!(portable.webdav_client_certificate_path.is_none());
     }
 }

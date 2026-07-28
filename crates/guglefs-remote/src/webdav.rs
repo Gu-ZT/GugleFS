@@ -1,26 +1,34 @@
 use async_trait::async_trait;
+use diqwest::WithDigestAuth;
 use guglefs_core::{
     AuthMethod, DirectoryEntry, EngineError, EngineResult, EntryKind, FileMetadata, FsErrorCode,
-    MappingConfig, Protocol, RemoteFileSystem,
+    MappingConfig, Protocol, RemoteFileSystem, WebDavAuthMethod,
 };
 use percent_encoding::percent_decode_str;
 use quick_xml::{events::Event, Reader};
 use reqwest::{
     header::{self, HeaderValue},
-    Client, Method, Proxy, RequestBuilder, StatusCode, Url,
+    Client, Identity, Method, Proxy, RequestBuilder, Response, StatusCode, Url,
 };
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{fs, future::Future, path::Path, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
 use crate::proxy::{system_proxy, ProxyConfig};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebDavFileSystem {
     client: Client,
     base_url: Url,
-    username: Option<String>,
-    password: Option<String>,
+    authentication: WebDavAuthentication,
     write_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Clone)]
+enum WebDavAuthentication {
+    Basic { username: String, password: String },
+    Digest { username: String, password: String },
+    Bearer(String),
+    None,
 }
 
 impl WebDavFileSystem {
@@ -36,14 +44,18 @@ impl WebDavFileSystem {
                 "WebDAV requires an HTTPS URL with a host".into(),
             ));
         }
-        Self::new_with_proxy(base_url, username, password, None)
+        let authentication = match (username, password) {
+            (Some(username), Some(password)) => WebDavAuthentication::Basic { username, password },
+            _ => WebDavAuthentication::None,
+        };
+        Self::new_with_proxy(base_url, authentication, None, None)
     }
 
     fn new_with_proxy(
         base_url: impl AsRef<str>,
-        username: Option<String>,
-        password: Option<String>,
+        authentication: WebDavAuthentication,
         proxy: Option<ProxyConfig>,
+        client_certificate_path: Option<&Path>,
     ) -> EngineResult<Self> {
         let base_url = Url::parse(base_url.as_ref())
             .map_err(|error| EngineError::InvalidConfig(format!("invalid WebDAV URL: {error}")))?;
@@ -73,14 +85,26 @@ impl WebDavFileSystem {
             })?),
             None => client.no_proxy(),
         };
+        if let Some(path) = client_certificate_path {
+            let pem = fs::read(path).map_err(|error| {
+                EngineError::InvalidConfig(format!(
+                    "read WebDAV client certificate PEM bundle: {error}"
+                ))
+            })?;
+            let identity = Identity::from_pem(&pem).map_err(|error| {
+                EngineError::InvalidConfig(format!(
+                    "parse WebDAV client certificate PEM bundle: {error}"
+                ))
+            })?;
+            client = client.identity(identity);
+        }
         let client = client
             .build()
             .map_err(|error| EngineError::Internal(format!("create WebDAV client: {error}")))?;
         Ok(Self {
             client,
             base_url,
-            username,
-            password,
+            authentication,
             write_lock: Arc::new(Mutex::new(())),
         })
     }
@@ -105,17 +129,51 @@ impl WebDavFileSystem {
         } else {
             remote_path.as_str()
         });
-        let username = match &config.auth {
-            AuthMethod::Password { .. } => config.username.clone(),
-            AuthMethod::Anonymous => None,
-            AuthMethod::PrivateKey { .. } | AuthMethod::SshAgent => {
+        let authentication = match (&config.webdav_auth, &config.auth) {
+            (WebDavAuthMethod::Basic, AuthMethod::Password { .. }) => WebDavAuthentication::Basic {
+                username: required_username(config)?,
+                password: password.ok_or_else(|| {
+                    EngineError::InvalidConfig("WebDAV Basic password is required".into())
+                })?,
+            },
+            (WebDavAuthMethod::Digest, AuthMethod::Password { .. }) => {
+                WebDavAuthentication::Digest {
+                    username: required_username(config)?,
+                    password: password.ok_or_else(|| {
+                        EngineError::InvalidConfig("WebDAV Digest password is required".into())
+                    })?,
+                }
+            }
+            (WebDavAuthMethod::Bearer, AuthMethod::Password { .. }) => {
+                WebDavAuthentication::Bearer(password.ok_or_else(|| {
+                    EngineError::InvalidConfig("WebDAV Bearer token is required".into())
+                })?)
+            }
+            (WebDavAuthMethod::ClientCertificate, AuthMethod::Anonymous)
+            | (WebDavAuthMethod::Anonymous, AuthMethod::Anonymous) => WebDavAuthentication::None,
+            _ => {
                 return Err(EngineError::InvalidConfig(
-                    "SSH authentication is not valid for WebDAV".into(),
+                    "WebDAV authentication configuration is inconsistent".into(),
                 ));
             }
         };
+        let client_certificate_path = match config.webdav_auth {
+            WebDavAuthMethod::ClientCertificate => Some(
+                config
+                    .webdav_client_certificate_path
+                    .as_deref()
+                    .filter(|path| !path.trim().is_empty())
+                    .map(Path::new)
+                    .ok_or_else(|| {
+                        EngineError::InvalidConfig(
+                            "WebDAV client certificate PEM bundle is required".into(),
+                        )
+                    })?,
+            ),
+            _ => None,
+        };
         let proxy = system_proxy(config)?;
-        Self::new_with_proxy(url.as_str(), username, password, proxy)
+        Self::new_with_proxy(url.as_str(), authentication, proxy, client_certificate_path)
     }
 
     fn endpoint(&self, path: &str) -> Url {
@@ -135,9 +193,26 @@ impl WebDavFileSystem {
 
     fn request(&self, method: Method, path: &str) -> RequestBuilder {
         let request = self.client.request(method, self.endpoint(path));
-        match (&self.username, &self.password) {
-            (Some(username), Some(password)) => request.basic_auth(username, Some(password)),
-            _ => request,
+        match &self.authentication {
+            WebDavAuthentication::Basic { username, password } => {
+                request.basic_auth(username, Some(password))
+            }
+            WebDavAuthentication::Bearer(token) => request.bearer_auth(token),
+            WebDavAuthentication::Digest { .. } | WebDavAuthentication::None => request,
+        }
+    }
+
+    async fn send(&self, request: RequestBuilder, operation: &str) -> EngineResult<Response> {
+        match &self.authentication {
+            WebDavAuthentication::Digest { username, password } => request
+                .send_with_digest_auth(username, password)
+                .await
+                .map_err(|error| {
+                    EngineError::Remote(format!("WebDAV {operation} request: {error}"))
+                }),
+            _ => request.send().await.map_err(|error| {
+                EngineError::Remote(format!("WebDAV {operation} request: {error}"))
+            }),
         }
     }
 
@@ -167,14 +242,12 @@ impl WebDavFileSystem {
     }
 
     async fn propfind(&self, path: &str, depth: &str) -> EngineResult<Vec<Resource>> {
-        let response = self
+        let request = self
             .request(Method::from_bytes(b"PROPFIND").expect("valid method"), path)
             .header("Depth", depth)
             .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
-            .body(PROPFIND_BODY)
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV PROPFIND request: {error}")))?;
+            .body(PROPFIND_BODY);
+        let response = self.send(request, "PROPFIND").await?;
         if response.status() != StatusCode::MULTI_STATUS {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
@@ -199,10 +272,8 @@ impl WebDavFileSystem {
         if resource.metadata.size == 0 {
             return Ok(Vec::new());
         }
-        let response = apply_write_condition(self.request(Method::GET, path), resource)
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV GET request: {error}")))?;
+        let request = apply_write_condition(self.request(Method::GET, path), resource);
+        let response = self.send(request, "GET").await?;
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
@@ -222,23 +293,16 @@ impl WebDavFileSystem {
         resource: &Resource,
     ) -> EngineResult<u64> {
         let length = data.len() as u64;
-        let response = apply_write_condition(self.request(Method::PUT, path), resource)
-            .body(data)
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV PUT request: {error}")))?;
+        let request = apply_write_condition(self.request(Method::PUT, path), resource).body(data);
+        let response = self.send(request, "PUT").await?;
         Self::finish(response, "conditional write").await?;
         Ok(length)
     }
 
     async fn put(&self, path: &str, data: Vec<u8>) -> EngineResult<u64> {
         let length = data.len() as u64;
-        let response = self
-            .request(Method::PUT, path)
-            .body(data)
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV PUT request: {error}")))?;
+        let request = self.request(Method::PUT, path).body(data);
+        let response = self.send(request, "PUT").await?;
         Self::finish(response, "write").await?;
         Ok(length)
     }
@@ -280,11 +344,8 @@ impl WebDavFileSystem {
     ) -> EngineResult<()> {
         let directory = metadata.kind == EntryKind::Directory;
         self.copy_resource(from, to, metadata).await?;
-        let response = self
-            .request(Method::DELETE, from)
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV DELETE request: {error}")))?;
+        let request = self.request(Method::DELETE, from);
+        let response = self.send(request, "DELETE").await?;
         Self::finish(
             response,
             if directory {
@@ -300,11 +361,8 @@ impl WebDavFileSystem {
 #[async_trait]
 impl RemoteFileSystem for WebDavFileSystem {
     async fn connect(&self) -> EngineResult<()> {
-        let response = self
-            .request(Method::OPTIONS, "")
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV OPTIONS request: {error}")))?;
+        let request = self.request(Method::OPTIONS, "");
+        let response = self.send(request, "OPTIONS").await?;
         Self::finish(response, "connect").await
     }
 
@@ -348,12 +406,10 @@ impl RemoteFileSystem for WebDavFileSystem {
         let end = offset
             .checked_add(length - 1)
             .ok_or_else(|| EngineError::InvalidConfig("read range overflows u64".into()))?;
-        let response = self
+        let request = self
             .request(Method::GET, path)
-            .header(header::RANGE, format!("bytes={offset}-{end}"))
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV GET request: {error}")))?;
+            .header(header::RANGE, format!("bytes={offset}-{end}"));
+        let response = self.send(request, "GET").await?;
         let status = response.status();
         if status == StatusCode::RANGE_NOT_SATISFIABLE {
             return Ok(Vec::new());
@@ -413,45 +469,35 @@ impl RemoteFileSystem for WebDavFileSystem {
     }
 
     async fn create_file(&self, path: &str) -> EngineResult<()> {
-        let response = self
+        let request = self
             .request(Method::PUT, path)
             .header("If-None-Match", "*")
-            .body(Vec::new())
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV create file request: {error}")))?;
+            .body(Vec::new());
+        let response = self.send(request, "create file").await?;
         Self::finish(response, "create file").await
     }
 
     async fn create_dir(&self, path: &str) -> EngineResult<()> {
         let method = Method::from_bytes(b"MKCOL").expect("valid method");
-        let response = self
-            .request(method, path)
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV MKCOL request: {error}")))?;
+        let request = self.request(method, path);
+        let response = self.send(request, "MKCOL").await?;
         Self::finish(response, "create directory").await
     }
 
     async fn remove(&self, path: &str, _directory: bool) -> EngineResult<()> {
-        let response = self
-            .request(Method::DELETE, path)
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV DELETE request: {error}")))?;
+        let request = self.request(Method::DELETE, path);
+        let response = self.send(request, "DELETE").await?;
         Self::finish(response, "remove").await
     }
 
     async fn rename(&self, from: &str, to: &str) -> EngineResult<()> {
         let destination = self.endpoint(to).to_string();
         let method = Method::from_bytes(b"MOVE").expect("valid method");
-        let response = self
+        let request = self
             .request(method, from)
             .header("Destination", destination)
-            .header("Overwrite", "T")
-            .send()
-            .await
-            .map_err(|error| EngineError::Remote(format!("WebDAV MOVE request: {error}")))?;
+            .header("Overwrite", "T");
+        let response = self.send(request, "MOVE").await?;
         if response.status().is_success() {
             return Ok(());
         }
@@ -519,6 +565,16 @@ const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
     <d:getetag />
   </d:prop>
 </d:propfind>"#;
+
+fn required_username(config: &MappingConfig) -> EngineResult<String> {
+    config
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|username| !username.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| EngineError::InvalidConfig("WebDAV username is required".into()))
+}
 
 fn parse_propfind(body: &[u8]) -> EngineResult<Vec<Resource>> {
     let mut reader = Reader::from_reader(body);
@@ -813,6 +869,76 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn sends_bearer_tokens_without_a_username() {
+        let (base_url, server, requests) = spawn_auth_test_server(false).await;
+        let file_system = test_file_system_with_auth(
+            &base_url,
+            WebDavAuthentication::Bearer("secret-token".into()),
+        );
+
+        file_system.connect().await.unwrap();
+        server.await.unwrap();
+
+        let request = String::from_utf8_lossy(&requests.lock().unwrap()[0]).into_owned();
+        assert!(request
+            .lines()
+            .any(|line| line == "authorization: Bearer secret-token"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn completes_the_digest_challenge_flow_for_webdav_methods() {
+        let (base_url, server, requests) = spawn_auth_test_server(true).await;
+        let file_system = test_file_system_with_auth(
+            &base_url,
+            WebDavAuthentication::Digest {
+                username: "digest-user".into(),
+                password: "digest-password".into(),
+            },
+        );
+
+        file_system.connect().await.unwrap();
+        server.await.unwrap();
+
+        let requests = requests.lock().unwrap();
+        let challenge = String::from_utf8_lossy(&requests[0]);
+        let authenticated = String::from_utf8_lossy(&requests[1]);
+        assert!(!challenge.to_ascii_lowercase().contains("authorization:"));
+        assert!(authenticated
+            .lines()
+            .any(|line| line.starts_with("authorization: Digest ")));
+        assert!(!authenticated.contains("digest-password"));
+    }
+
+    #[test]
+    fn client_certificate_mode_requires_a_local_pem_bundle() {
+        let config = MappingConfig {
+            id: "webdav".into(),
+            name: "WebDAV".into(),
+            protocol: Protocol::Webdav,
+            host: "files.example.com".into(),
+            port: 443,
+            username: None,
+            auth: AuthMethod::Anonymous,
+            remote_path: "/".into(),
+            mount_point: "Z:".into(),
+            ftp_tls: false,
+            host_key_fingerprint: None,
+            sftp_totp_required: false,
+            ignore_system_proxy: true,
+            webdav_auth: WebDavAuthMethod::ClientCertificate,
+            webdav_client_certificate_path: None,
+            auto_mount: false,
+        };
+
+        let error = WebDavFileSystem::from_config(&config, None)
+            .err()
+            .expect("missing client certificate must fail");
+        assert!(error
+            .to_string()
+            .contains("client certificate PEM bundle is required"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn treats_an_unsatisfied_range_as_end_of_file() {
         let (base_url, server, _requests) =
             spawn_test_server_with_get_status(1, "416 Range Not Satisfiable", "invalid range")
@@ -954,13 +1080,43 @@ mod tests {
     }
 
     fn test_file_system(base_url: &str) -> WebDavFileSystem {
+        test_file_system_with_auth(base_url, WebDavAuthentication::None)
+    }
+
+    fn test_file_system_with_auth(
+        base_url: &str,
+        authentication: WebDavAuthentication,
+    ) -> WebDavFileSystem {
         WebDavFileSystem {
             client: Client::builder().build().unwrap(),
             base_url: Url::parse(base_url).unwrap(),
-            username: None,
-            password: None,
+            authentication,
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    async fn spawn_auth_test_server(
+        digest_challenge: bool,
+    ) -> (String, JoinHandle<()>, Arc<Mutex<Vec<Vec<u8>>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured_requests = requests.clone();
+        let request_count = if digest_challenge { 2 } else { 1 };
+        let server = tokio::spawn(async move {
+            for index in 0..request_count {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut stream).await;
+                captured_requests.lock().unwrap().push(request);
+                let response = if digest_challenge && index == 0 {
+                    "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Digest realm=\"guglefs\", qop=\"auth\", nonce=\"test-nonce\", algorithm=MD5\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("http://{address}/remote"), server, requests)
     }
 
     async fn spawn_test_server(

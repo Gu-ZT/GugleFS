@@ -65,7 +65,7 @@ impl MappingManager {
     pub fn from_configs(configs: impl IntoIterator<Item = MappingConfig>) -> EngineResult<Self> {
         let manager = Self::default();
         for config in configs {
-            manager.upsert(config)?;
+            manager.upsert(config.migrated())?;
         }
         Ok(manager)
     }

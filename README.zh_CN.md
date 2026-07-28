@@ -12,7 +12,7 @@
 
 GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置一次映射并挂载后，远程路径就像本机上的普通磁盘或目录一样，可以被任何应用直接使用，而不仅是文件传输窗口。
 
-- **三种协议，一个界面** —— FTP/FTPS、SFTP（密码、私钥、SSH Agent、MFA）、WebDAV（HTTPS）
+- **三种协议，一个界面** —— FTP/FTPS、SFTP（密码、私钥、SSH Agent、MFA）、WebDAV（Basic、Digest、Bearer 或客户端证书）
 - **原生挂载** —— Windows 使用 WinFsp 2.1，Linux 使用 FUSE3，macOS 使用 FUSE-T 1.2.7
 - **启动即锁定** —— TOTP 双因素认证保护应用启动，凭据保存在系统安全凭据库
 - **经得起断网** —— 空闲 keepalive、静默重连、重启后恢复挂载
@@ -34,7 +34,7 @@ GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置�
   <img src="docs/main.png" width="720" alt="映射列表 —— 已挂载的 SFTP 磁盘">
 </p>
 
-添加映射的表单随协议适配——SFTP 提供密码、OpenSSH/PEM 私钥、SSH Agent 和 MFA 选项，WebDAV 则保持精简。每个映射保存前都可以先测试连接：
+添加映射的表单随协议适配：SFTP 提供密码、OpenSSH/PEM 私钥、SSH Agent 和 MFA；WebDAV 提供 Basic、Digest、Bearer Token、客户端证书和匿名认证。每个映射保存前都可以先测试连接：
 
 <table>
   <tr>
@@ -46,7 +46,7 @@ GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置�
   </tr>
   <tr>
     <td align="center"><sub>SFTP：密码、私钥、SSH Agent 或 MFA 认证</sub></td>
-    <td align="center"><sub>WebDAV（HTTPS）</sub></td>
+    <td align="center"><sub>WebDAV（HTTPS，可选择认证方式）</sub></td>
   </tr>
 </table>
 
@@ -124,7 +124,9 @@ SFTP 支持密码、OpenSSH/PEM 私钥和 SSH Agent 认证。Unix 通过 `SSH_AU
 
 SFTP 服务器需要 MFA 时，可在映射中勾选“需要 MFA”，并在测试连接或挂载时手动输入当前 6 位 TOTP 验证码。验证码仅用于本次请求，不会保存到配置或系统凭据库；此类映射不支持自动挂载。空闲 SSH 传输会定时发送协议层 keepalive；只要已认证的 SSH 传输仍然存活，SFTP session 关闭后会静默重建，不需要再次输入验证码。如果 SSH 传输本身已经断开，则必须使用新的验证码手动重新挂载。非 MFA 连接仍会自动重连，并对可安全重试的操作重试一次。
 
-WebDAV 仅允许 HTTPS，并将重定向限制在原始同源地址。读改写和截断优先使用强 ETag 配合 `If-Match`，弱 ETag 或无 ETag 时在服务器提供 Last-Modified 的情况下回退到 `If-Unmodified-Since`。条件失败会作为文件系统忙/版本冲突返回，不会静默覆盖新版本。服务器同时不提供两种校验器时，GugleFS 会在单个挂载进程内串行写入，但来自其他客户端的并发写入仍可能按最后写入者覆盖；当前不会发送 WebDAV `LOCK`/`UNLOCK`。
+WebDAV 仅允许 HTTPS，支持 Basic、Digest、Bearer Token、客户端证书和匿名认证。密码和 Bearer Token 保存在平台安全凭据库。客户端证书模式读取包含证书链及一个未加密 RSA、EC 或 PKCS#8 私钥的本地组合 PEM 文件；配置只保存本地路径，可移植导出会移除该路径。
+
+WebDAV 重定向限制在原始同源地址。读改写和截断优先使用强 ETag 配合 `If-Match`，弱 ETag 或无 ETag 时在服务器提供 Last-Modified 的情况下回退到 `If-Unmodified-Since`。条件失败会作为文件系统忙/版本冲突返回，不会静默覆盖新版本。服务器同时不提供两种校验器时，GugleFS 会在单个挂载进程内串行写入，但来自其他客户端的并发写入仍可能按最后写入者覆盖；当前不会发送 WebDAV `LOCK`/`UNLOCK`。
 
 保存映射前可以在表单中浏览远程目录。目录浏览复用表单内当前凭据、系统代理设置、SFTP 主机密钥验证和临时 MFA 验证码；选择目录后只将绝对路径写回映射，不会持久化本次临时认证信息。
 
@@ -132,7 +134,7 @@ WebDAV 仅允许 HTTPS，并将重定向限制在原始同源地址。读改写�
 
 每个映射默认读取系统代理，也可以勾选“忽略系统代理”强制直连。Linux 和 macOS 读取协议对应的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`SFTP_PROXY`、`ALL_PROXY` 及小写变量，并遵守 `NO_PROXY`。Windows 读取当前用户注册表 `Internet Settings` 下的 `ProxyEnable`、`ProxyServer` 和 `ProxyOverride`。WebDAV 使用 HTTP(S) 或 SOCKS5 代理；SFTP、FTP 和 FTPS 通过 HTTP CONNECT 或 SOCKS5 建立隧道，FTP 的控制连接和被动数据连接都会使用同一代理。
 
-首次启动会引导使用身份验证器注册 TOTP 2FA，之后每次启动都必须输入 6 位验证码。FTP/FTPS、SFTP 和 WebDAV 的密码、私钥口令、粘贴私钥，以及用于应用启动 2FA 的 TOTP 密钥分别保存在 Windows Credential Manager、macOS Keychain 或 Linux Secret Service；应用配置和挂载恢复状态只保存凭据引用和映射 ID。SFTP MFA 验证码只在当前测试或挂载请求中使用，不会加入系统凭据库。
+首次启动会引导使用身份验证器注册 TOTP 2FA，之后每次启动都必须输入 6 位验证码。FTP/FTPS、SFTP 和 WebDAV 的密码、Bearer Token、私钥口令、粘贴私钥，以及用于应用启动 2FA 的 TOTP 密钥分别保存在 Windows Credential Manager、macOS Keychain 或 Linux Secret Service；应用配置和挂载恢复状态只保存凭据引用和映射 ID。SFTP MFA 验证码只在当前测试或挂载请求中使用，不会加入系统凭据库。
 
 点击“锁定”会先安全卸载当前所有映射，再进入 2FA 锁屏。解锁或重启后，GugleFS 会自动恢复上次仍处于挂载状态且已保存凭据的映射；用户主动点击“卸载”后，该映射不会在下次解锁时恢复（启用了 `auto_mount` 的配置除外）。需要 MFA 的 SFTP 映射始终不会自动恢复，必须由用户输入当前验证码后手动挂载。
 
@@ -146,7 +148,7 @@ WebDAV 仅允许 HTTPS，并将重定向限制在原始同源地址。读改写�
 
 ## 安全边界
 
-`MappingConfig` 只保存凭据 ID、本地私钥路径、粘贴私钥引用、是否需要 SFTP MFA、代理忽略开关和已确认的 SSH 主机指纹，不保存密码、私钥口令、代理凭据、粘贴私钥正文或 SFTP TOTP 验证码。FTP/FTPS、SFTP、WebDAV 凭据和应用启动 2FA 的 TOTP 密钥保存在系统安全凭据库；粘贴私钥按唯一 ID 分块保存，以适配平台单条凭据的大小限制。连接测试和挂载中的临时认证材料只通过本次 IPC 请求传递，不会写入配置、日志或 IPC 返回值。
+`MappingConfig` 只保存凭据 ID、本地 SSH/客户端证书私钥路径、粘贴私钥引用、是否需要 SFTP MFA、代理忽略开关和已确认的 SSH 主机指纹，不保存密码、Bearer Token、私钥口令、代理凭据、粘贴私钥正文或 SFTP TOTP 验证码。FTP/FTPS、SFTP、WebDAV 凭据和应用启动 2FA 的 TOTP 密钥保存在系统安全凭据库；粘贴私钥按唯一 ID 分块保存，以适配平台单条凭据的大小限制。连接测试和挂载中的临时认证材料只通过本次 IPC 请求传递，不会写入配置、日志或 IPC 返回值。
 
 映射配置会保存到 Tauri 应用配置目录下的 `mappings.json`，文件包含 `schemaVersion`。用于解锁后恢复的映射 ID 单独保存在 `mount-state.json`，运行时错误和凭据内容不会写入这两个文件。
 

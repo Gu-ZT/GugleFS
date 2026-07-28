@@ -1,5 +1,11 @@
 export type Protocol = "ftp" | "sftp" | "webdav";
 export type MappingState = "unmounted" | "mounting" | "mounted" | "error";
+export type WebDavAuthMethod =
+  | "basic"
+  | "digest"
+  | "bearer"
+  | "client_certificate"
+  | "anonymous";
 
 export type AuthMethod =
   | { type: "password"; credential_id: string | null }
@@ -26,6 +32,8 @@ export interface MappingConfig {
   hostKeyFingerprint: string | null;
   sftpTotpRequired: boolean;
   ignoreSystemProxy: boolean;
+  webdavAuth: WebDavAuthMethod;
+  webdavClientCertificatePath: string | null;
   autoMount: boolean;
 }
 
@@ -75,6 +83,14 @@ export interface RemoteBrowserListing {
 }
 
 export function hasPersistedAuthentication(config: MappingConfig): boolean {
+  if (config.protocol === "webdav") {
+    if (config.webdavAuth === "client_certificate") {
+      return config.webdavClientCertificatePath !== null;
+    }
+    if (config.webdavAuth === "anonymous") {
+      return true;
+    }
+  }
   switch (config.auth.type) {
     case "password":
       return config.auth.credential_id !== null;

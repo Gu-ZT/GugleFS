@@ -1003,6 +1003,15 @@ fn private_key_id(config: &MappingConfig) -> Option<&str> {
 }
 
 fn has_persisted_authentication(config: &MappingConfig) -> bool {
+    if config.protocol == Protocol::Webdav {
+        match config.webdav_auth {
+            guglefs_core::WebDavAuthMethod::ClientCertificate => {
+                return config.webdav_client_certificate_path.is_some();
+            }
+            guglefs_core::WebDavAuthMethod::Anonymous => return true,
+            _ => {}
+        }
+    }
     match &config.auth {
         AuthMethod::Password { credential_id } => credential_id.is_some(),
         AuthMethod::PrivateKey {
@@ -1087,6 +1096,8 @@ mod tests {
                 host_key_fingerprint: Some("SHA256:test".into()),
                 sftp_totp_required: mfa_required,
                 ignore_system_proxy: false,
+                webdav_auth: Default::default(),
+                webdav_client_certificate_path: None,
                 auto_mount: true,
             },
             state: MappingState::Unmounted,

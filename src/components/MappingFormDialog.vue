@@ -10,6 +10,7 @@ import type {
   Protocol,
   RemoteBrowserListing,
   RemoteDirectory,
+  WebDavAuthMethod,
 } from "../types";
 
 const DEFAULT_PORTS: Record<Protocol, number> = { ftp: 21, sftp: 22, webdav: 443 };
@@ -27,6 +28,8 @@ const draft = reactive({
   username: "",
   password: "",
   sftpAuth: "password" as "password" | "private_key" | "ssh_agent",
+  webdavAuth: "basic" as WebDavAuthMethod,
+  webdavClientCertificatePath: "",
   keySource: "local" as "local" | "pasted",
   keyPath: "",
   privateKey: "",
@@ -43,6 +46,7 @@ const editing = ref<MappingRuntime | null>(null);
 const editingCredentialId = ref<string | null>(null);
 const editingAuthType = ref<AuthMethod["type"] | null>(null);
 const editingKeyId = ref<string | null>(null);
+const editingWebDavAuth = ref<WebDavAuthMethod | null>(null);
 const trustedHostKeyFingerprint = ref<string | null>(null);
 
 const notice = ref<{ message: string; kind: "error" | "success" } | null>(null);
@@ -78,9 +82,35 @@ const sshAgentAuth = computed(
   () => draft.protocol === "sftp" && draft.sftpAuth === "ssh_agent",
 );
 const totpActive = computed(() => draft.protocol === "sftp" && draft.sftpTotpEnabled);
-const credentialLabel = computed(() => (privateKeyAuth.value ? "私钥口令" : "密码"));
+const webdavClientCertificateAuth = computed(
+  () => draft.protocol === "webdav" && draft.webdavAuth === "client_certificate",
+);
+const webdavAnonymousAuth = computed(
+  () => draft.protocol === "webdav" && draft.webdavAuth === "anonymous",
+);
+const usernameVisible = computed(
+  () =>
+    draft.protocol !== "webdav" ||
+    draft.webdavAuth === "basic" ||
+    draft.webdavAuth === "digest",
+);
+const credentialInputVisible = computed(
+  () =>
+    !sshAgentAuth.value &&
+    !webdavClientCertificateAuth.value &&
+    !webdavAnonymousAuth.value,
+);
+const credentialLabel = computed(() => {
+  if (privateKeyAuth.value) return "私钥口令";
+  if (draft.protocol === "webdav" && draft.webdavAuth === "bearer") return "Bearer Token";
+  return "密码";
+});
 const passwordPlaceholder = computed(() =>
-  privateKeyAuth.value ? "可选；留空则保留已保存口令" : "留空则保留已保存密码",
+  privateKeyAuth.value
+    ? "可选；留空则保留已保存口令"
+    : draft.protocol === "webdav" && draft.webdavAuth === "bearer"
+      ? "留空则保留已保存 Token"
+      : "留空则保留已保存密码",
 );
 
 function onProtocolChange(): void {
@@ -91,13 +121,16 @@ function readMappingConfig(): MappingConfig {
   const preserveCredential =
     editing.value !== null &&
     draft.protocol === editing.value.config.protocol &&
-    (draft.protocol !== "sftp" || draft.sftpAuth === editingAuthType.value);
+    (draft.protocol !== "sftp" || draft.sftpAuth === editingAuthType.value) &&
+    (draft.protocol !== "webdav" || draft.webdavAuth === editingWebDavAuth.value);
   let auth: AuthMethod = {
     type: "password",
     credential_id: preserveCredential ? editingCredentialId.value : null,
   };
   if (sshAgentAuth.value) {
     auth = { type: "ssh_agent" };
+  } else if (webdavClientCertificateAuth.value || webdavAnonymousAuth.value) {
+    auth = { type: "anonymous" };
   } else if (privateKeyAuth.value) {
     auth = {
       type: "private_key",
@@ -115,7 +148,7 @@ function readMappingConfig(): MappingConfig {
     protocol: draft.protocol,
     host: draft.host.trim(),
     port: draft.port,
-    username: draft.username.trim() || null,
+    username: usernameVisible.value ? draft.username.trim() || null : null,
     auth,
     remotePath: draft.remotePath.trim(),
     mountPoint: draft.mountPoint.trim(),
@@ -124,6 +157,10 @@ function readMappingConfig(): MappingConfig {
       draft.protocol === "sftp" ? trustedHostKeyFingerprint.value : null,
     sftpTotpRequired: totpActive.value,
     ignoreSystemProxy: draft.ignoreSystemProxy,
+    webdavAuth: draft.protocol === "webdav" ? draft.webdavAuth : "basic",
+    webdavClientCertificatePath: webdavClientCertificateAuth.value
+      ? draft.webdavClientCertificatePath.trim() || null
+      : null,
     autoMount: totpActive.value ? false : draft.autoMount,
   };
 }
@@ -239,6 +276,19 @@ async function testConnection(): Promise<void> {
     notice.value = { message: String(error), kind: "error" };
   } finally {
     testing.value = false;
+  }
+}
+
+async function chooseWebDavClientCertificate(): Promise<void> {
+  try {
+    const selected = await openFileDialog({
+      multiple: false,
+      directory: false,
+      title: "选择 PEM 客户端证书和私钥",
+    });
+    if (typeof selected === "string") draft.webdavClientCertificatePath = selected;
+  } catch (error) {
+    notice.value = { message: String(error), kind: "error" };
   }
 }
 
@@ -361,6 +411,7 @@ async function open(runtime?: MappingRuntime): Promise<void> {
   editingCredentialId.value = auth && "credential_id" in auth ? auth.credential_id : null;
   editingAuthType.value = auth?.type ?? null;
   editingKeyId.value = privateKeyConfig?.key_id ?? null;
+  editingWebDavAuth.value = config?.webdavAuth ?? null;
   trustedHostKeyFingerprint.value = config?.hostKeyFingerprint ?? null;
 
   draft.id = config?.id ?? "";
@@ -372,6 +423,8 @@ async function open(runtime?: MappingRuntime): Promise<void> {
   draft.password = "";
   draft.sftpAuth =
     auth?.type === "ssh_agent" ? "ssh_agent" : privateKeyConfig ? "private_key" : "password";
+  draft.webdavAuth = config?.webdavAuth ?? "basic";
+  draft.webdavClientCertificatePath = config?.webdavClientCertificatePath ?? "";
   draft.keySource = privateKeyConfig?.key_id ? "pasted" : "local";
   draft.keyPath = privateKeyConfig?.key_path ?? "";
   draft.privateKey = "";
@@ -396,6 +449,7 @@ function onDialogClose(): void {
   editingCredentialId.value = null;
   editingAuthType.value = null;
   editingKeyId.value = null;
+  editingWebDavAuth.value = null;
   trustedHostKeyFingerprint.value = null;
   draft.password = "";
   draft.privateKey = "";
@@ -443,9 +497,14 @@ defineExpose({ open });
           <span>服务器</span>
           <input v-model="draft.host" required placeholder="files.example.com" />
         </label>
-        <label>
+        <label v-if="usernameVisible">
           <span>用户名</span>
-          <input v-model="draft.username" autocomplete="username" placeholder="user" />
+          <input
+            v-model="draft.username"
+            autocomplete="username"
+            placeholder="user"
+            :required="draft.protocol === 'webdav'"
+          />
         </label>
         <label v-if="draft.protocol === 'sftp'">
           <span>认证方式</span>
@@ -453,6 +512,16 @@ defineExpose({ open });
             <option value="password">密码</option>
             <option value="private_key">SSH 私钥</option>
             <option value="ssh_agent">SSH Agent</option>
+          </select>
+        </label>
+        <label v-if="draft.protocol === 'webdav'">
+          <span>认证方式</span>
+          <select v-model="draft.webdavAuth">
+            <option value="basic">Basic</option>
+            <option value="digest">Digest</option>
+            <option value="bearer">Bearer Token</option>
+            <option value="client_certificate">客户端证书</option>
+            <option value="anonymous">匿名</option>
           </select>
         </label>
         <label v-if="draft.protocol === 'sftp'" class="full-width">
@@ -468,7 +537,7 @@ defineExpose({ open });
             </button>
           </div>
         </label>
-        <label v-if="!sshAgentAuth">
+        <label v-if="credentialInputVisible">
           <span>{{ credentialLabel }}</span>
           <input
             v-model="draft.password"
@@ -529,6 +598,20 @@ defineExpose({ open });
               @click="openRemoteBrowser"
             >
               浏览
+            </button>
+          </div>
+        </label>
+        <label v-if="webdavClientCertificateAuth" class="full-width">
+          <span>客户端证书</span>
+          <div class="input-action">
+            <input
+              v-model="draft.webdavClientCertificatePath"
+              readonly
+              required
+              placeholder="包含证书链和未加密私钥的 PEM 文件"
+            />
+            <button class="secondary" type="button" @click="chooseWebDavClientCertificate">
+              选择
             </button>
           </div>
         </label>

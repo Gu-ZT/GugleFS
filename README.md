@@ -12,7 +12,7 @@ English | [简体中文](README.zh_CN.md)
 
 GugleFS is a cross-platform Tauri desktop client that turns remote servers into local filesystems. Configure a mapping once, mount it, and the remote path behaves like any drive or directory on your machine — in every application, not just a file transfer window.
 
-- **Three protocols, one UI** — FTP/FTPS, SFTP (password, private key, SSH Agent, MFA), and WebDAV over HTTPS
+- **Three protocols, one UI** — FTP/FTPS, SFTP (password, private key, SSH Agent, MFA), and WebDAV (Basic, Digest, Bearer, or client certificate)
 - **Native mounts** — WinFsp 2.1 on Windows, FUSE3 on Linux, FUSE-T 1.2.7 on macOS
 - **Locked at startup** — TOTP two-factor authentication gates the app; credentials live in the OS secure store
 - **Survives the network** — idle keepalives, silent reconnects, and mount recovery after restart
@@ -34,7 +34,7 @@ Mounted mappings show live status, endpoint, mount point, and credential state a
   <img src="docs/main.png" width="720" alt="Mapping list with a mounted SFTP drive">
 </p>
 
-Adding a mapping adapts to the protocol — SFTP offers password, OpenSSH/PEM private-key, SSH Agent, and MFA options, while WebDAV stays minimal. Every mapping can be tested before it is saved:
+Adding a mapping adapts to the protocol: SFTP offers password, OpenSSH/PEM private-key, SSH Agent, and MFA options; WebDAV offers Basic, Digest, Bearer Token, client-certificate, and anonymous authentication. Every mapping can be tested before it is saved:
 
 <table>
   <tr>
@@ -46,7 +46,7 @@ Adding a mapping adapts to the protocol — SFTP offers password, OpenSSH/PEM pr
   </tr>
   <tr>
     <td align="center"><sub>SFTP with password, key, SSH Agent, or MFA authentication</sub></td>
-    <td align="center"><sub>WebDAV over HTTPS</sub></td>
+    <td align="center"><sub>WebDAV over HTTPS with selectable authentication</sub></td>
   </tr>
 </table>
 
@@ -123,7 +123,9 @@ The first connection displays the server's SHA-256 host-key fingerprint; subsequ
 
 For an SFTP server that requires MFA, enable `Requires MFA` on the mapping and enter the current six-digit TOTP code when testing or mounting. The code is used only for that request and is never stored. MFA mappings cannot mount automatically. Idle SSH transports send protocol-level keepalives, and GugleFS silently reopens a closed SFTP subsystem while the authenticated SSH transport remains active. If the SSH transport itself closes, the mapping must be mounted manually with a new TOTP code. Non-MFA connections can reconnect and safely retry eligible operations automatically.
 
-WebDAV requires HTTPS and keeps redirects on the original origin. Read-modify-write operations and truncation use a strong ETag with `If-Match`; weak or unavailable ETags fall back to `If-Unmodified-Since` when Last-Modified is present. A failed condition is returned to the filesystem as a busy/conflict error instead of silently overwriting a newer version. Servers that provide neither validator are serialized within one GugleFS mount process, but concurrent writes from another client can still use last-writer-wins semantics; GugleFS does not issue WebDAV `LOCK`/`UNLOCK` requests.
+WebDAV requires HTTPS and supports Basic, Digest, Bearer Token, client-certificate, and anonymous authentication. Passwords and Bearer tokens use the platform secure store. Client-certificate mode reads a local combined PEM bundle containing the certificate chain and one unencrypted RSA, EC, or PKCS#8 private key; configuration stores only its local path, and portable exports remove that path.
+
+WebDAV redirects stay on the original origin. Read-modify-write operations and truncation use a strong ETag with `If-Match`; weak or unavailable ETags fall back to `If-Unmodified-Since` when Last-Modified is present. A failed condition is returned to the filesystem as a busy/conflict error instead of silently overwriting a newer version. Servers that provide neither validator are serialized within one GugleFS mount process, but concurrent writes from another client can still use last-writer-wins semantics; GugleFS does not issue WebDAV `LOCK`/`UNLOCK` requests.
 
 The mapping form can browse remote directories before saving. It uses the current form credentials, system proxy setting, SFTP host-key verification, and transient MFA code; selecting a directory writes its absolute path back to the mapping without persisting any temporary secret.
 
@@ -137,7 +139,7 @@ WebDAV supports HTTP(S) and SOCKS5 proxies. SFTP, FTP, and FTPS use HTTP CONNECT
 
 ## Credentials and startup security
 
-On first launch, GugleFS enrolls a TOTP authenticator and requires a six-digit code on subsequent launches. Passwords, private-key passphrases, pasted keys, and the application-startup TOTP secret are stored in Windows Credential Manager, macOS Keychain, or Linux Secret Service. Mapping and recovery files contain only credential references and mapping IDs. SFTP MFA codes are transient and are not added to the secure store.
+On first launch, GugleFS enrolls a TOTP authenticator and requires a six-digit code on subsequent launches. Passwords, WebDAV Bearer tokens, private-key passphrases, pasted keys, and the application-startup TOTP secret are stored in Windows Credential Manager, macOS Keychain, or Linux Secret Service. Mapping and recovery files contain only credential references and mapping IDs. SFTP MFA codes are transient and are not added to the secure store.
 
 Locking the app safely unmounts active mappings before showing the 2FA screen. After unlock or restart, GugleFS restores mappings that were still mounted and have saved credentials, plus mappings with `auto_mount` enabled. A mapping explicitly unmounted by the user is not restored unless `auto_mount` is enabled. SFTP mappings that require MFA are always excluded from automatic restoration.
 
@@ -149,7 +151,7 @@ The shared VFS uses bounded short-lived caches: metadata for 3 seconds, director
 
 ## Security boundary
 
-`MappingConfig` stores credential IDs, local private-key paths, pasted-key references, whether SFTP MFA is required, the proxy bypass flag, and approved SSH host-key fingerprints. It does not store passwords, private-key passphrases, proxy credentials, pasted private-key contents, or SFTP TOTP codes. Transient authentication material is passed only in the current IPC request and is not written to configuration, logs, or IPC responses.
+`MappingConfig` stores credential IDs, local SSH/client-certificate private-key paths, pasted-key references, whether SFTP MFA is required, the proxy bypass flag, and approved SSH host-key fingerprints. It does not store passwords, Bearer tokens, private-key passphrases, proxy credentials, pasted private-key contents, or SFTP TOTP codes. Transient authentication material is passed only in the current IPC request and is not written to configuration, logs, or IPC responses.
 
 Configuration is stored in `mappings.json` under the Tauri application configuration directory. Mount recovery IDs are stored separately in `mount-state.json`. Runtime errors and credentials are not persisted in either file.
 

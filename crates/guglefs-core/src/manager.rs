@@ -143,6 +143,8 @@ mod tests {
             host_key_fingerprint: Some("SHA256:test".into()),
             sftp_totp_required: false,
             ignore_system_proxy: false,
+            webdav_auth: Default::default(),
+            webdav_client_certificate_path: None,
             auto_mount: false,
         }
     }

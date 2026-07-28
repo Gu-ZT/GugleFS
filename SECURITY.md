@@ -8,7 +8,7 @@ Report vulnerabilities privately through GitHub Security Advisories for `Gu-ZT/G
 
 ## Assets And Trust Boundaries
 
-GugleFS handles remote-server credentials, pasted and local SSH private keys, the application TOTP seed, remote file contents, mount paths, proxy configuration, and remembered mount state. The trusted computing base includes the GugleFS process, the operating-system credential store, WinFsp/FUSE/FUSE-T, TLS and SSH implementations, and the user's operating-system account.
+GugleFS handles remote-server credentials, pasted and local SSH private keys, local WebDAV client-certificate identities, the application TOTP seed, remote file contents, mount paths, proxy configuration, and remembered mount state. The trusted computing base includes the GugleFS process, the operating-system credential store, WinFsp/FUSE/FUSE-T, TLS and SSH implementations, and the user's operating-system account.
 
 FTP servers, WebDAV servers, SFTP servers, proxies, directory listings, filenames, redirects, and filesystem callers are untrusted. A user who can read or modify the current operating-system account can control application configuration and should be considered inside the trust boundary.
 
@@ -16,7 +16,7 @@ FTP servers, WebDAV servers, SFTP servers, proxies, directory listings, filename
 
 | Threat | Current control | Residual risk |
 | --- | --- | --- |
-| Credential disclosure at rest | Passwords, pasted keys, private-key passphrases, and the application TOTP seed use the platform credential store; configuration stores references only | Local private-key mode stores its filesystem path; compromise of the user account or credential store exposes secrets |
+| Credential disclosure at rest | Passwords, Bearer tokens, pasted keys, private-key passphrases, and the application TOTP seed use the platform credential store; configuration stores references only | Local SSH keys and WebDAV client-certificate identities remain in user-selected files whose paths are stored locally; compromise of the user account or credential store exposes secrets |
 | Credential disclosure over IPC or logs | Secret values are accepted only as command inputs and are not returned; fixed-field JSONL logs and diagnostic reports exclude identifying configuration and free-form errors | Crash dumps and third-party libraries remain platform concerns |
 | WebDAV credential forwarding | HTTPS is required and authenticated redirects are restricted to the same origin | A trusted server or local TLS trust-store compromise can still expose credentials |
 | SSH server impersonation | SFTP stores and checks a user-approved SHA-256 host-key fingerprint; imported `known_hosts` entries must match the live key | First-use confirmation or selection of an untrusted `known_hosts` file can still establish the wrong trust root |
@@ -38,4 +38,4 @@ FTP servers, WebDAV servers, SFTP servers, proxies, directory listings, filename
 
 ## Known Gaps
 
-Release signing and notarization, OpenSSH `known_hosts` import, SSH Agent support, durable write recovery, protocol integration environments, filesystem consistency tests, and hostile-server fuzzing remain open work. See `TODO.md`; these items require platform credentials, external services, or broader design work and must not be represented as completed without verification evidence.
+Release signing and notarization, durable write recovery, protocol integration environments, filesystem consistency tests, and hostile-server fuzzing remain open work. See `TODO.md`; these items require platform credentials, external services, or broader design work and must not be represented as completed without verification evidence.

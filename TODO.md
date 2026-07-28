@@ -46,7 +46,7 @@
 - [x] WebDAV：将运行时凭据接入连接测试
 - [x] WebDAV：将系统凭据接入挂载编排
 - [x] WebDAV：支持 Basic 认证
-- [ ] WebDAV：支持 Digest，评估 Bearer Token 与客户端证书
+- [x] WebDAV：支持 Basic、Digest、Bearer Token、匿名和本地 PEM 客户端证书认证
 - [x] WebDAV：使用强 ETag `If-Match`，弱 ETag 回退 `If-Unmodified-Since`，并将条件失败映射为并发冲突
 - [x] WebDAV：正确处理 Range 请求和同源重定向
 - [x] WebDAV：采用条件写回；无 ETag/Last-Modified 的服务器在单个挂载进程内串行写入，并明确外部并发的最后写入覆盖风险
