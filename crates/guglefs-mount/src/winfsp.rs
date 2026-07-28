@@ -29,7 +29,12 @@ use winfsp_wrs::{
 type DynamicVfs = RemoteVfs<dyn RemoteFileSystem>;
 
 pub struct SystemMountDriver {
-    mounts: Mutex<HashMap<String, FileSystem>>,
+    mounts: Mutex<HashMap<String, MountedFileSystem>>,
+}
+
+struct MountedFileSystem {
+    file_system: FileSystem,
+    restore_empty_directory: bool,
 }
 
 impl Default for SystemMountDriver {
@@ -48,8 +53,17 @@ impl SystemMountDriver {
                 .lock()
                 .map_err(|error| EngineError::Internal(error.to_string()))?,
         );
-        for file_system in mounts.into_values() {
-            file_system.stop();
+        let mut failures = Vec::new();
+        for (mount_point, mounted) in mounts {
+            mounted.file_system.stop();
+            if let Err(error) =
+                restore_mount_directory(&mount_point, mounted.restore_empty_directory)
+            {
+                failures.push(error.to_string());
+            }
+        }
+        if !failures.is_empty() {
+            return Err(EngineError::Mount(failures.join("; ")));
         }
         Ok(())
     }
@@ -512,6 +526,7 @@ impl MountDriver for SystemMountDriver {
         })?;
         let mount_point_wide = U16CString::from_str(&mount_point)
             .map_err(|_| EngineError::InvalidConfig("mount point is not valid UTF-16".into()))?;
+        let restore_empty_directory = prepare_directory_mount_point(&mount_point)?;
         let mut volume_params = winfsp_wrs::VolumeParams::default();
         volume_params
             .set_case_sensitive_search(true)
@@ -528,31 +543,49 @@ impl MountDriver for SystemMountDriver {
             Some(&mount_point_wide),
             MountCallbacks { mount: context },
         )
-        .map_err(|status| EngineError::Mount(format!("WinFsp mount failed: 0x{status:08X}")))?;
+        .map_err(|status| {
+            let _ = restore_mount_directory(&mount_point, restore_empty_directory);
+            if status == STATUS_OBJECT_NAME_COLLISION {
+                EngineError::Mount(format!(
+                    "WinFsp mount point is occupied: {mount_point} (0x{status:08X})"
+                ))
+            } else {
+                EngineError::Mount(format!("WinFsp mount failed: 0x{status:08X}"))
+            }
+        })?;
         let mut mounts = match self.mounts.lock() {
             Ok(mounts) => mounts,
             Err(error) => {
                 file_system.stop();
+                let _ = restore_mount_directory(&mount_point, restore_empty_directory);
                 return Err(EngineError::Internal(error.to_string()));
             }
         };
         if mounts.contains_key(&mount_point) {
             file_system.stop();
+            let _ = restore_mount_directory(&mount_point, restore_empty_directory);
             return Err(EngineError::AlreadyMounted(mount_point));
         }
-        mounts.insert(mount_point, file_system);
+        mounts.insert(
+            mount_point,
+            MountedFileSystem {
+                file_system,
+                restore_empty_directory,
+            },
+        );
         Ok(())
     }
 
     async fn unmount(&self, mount_point: &str) -> EngineResult<()> {
         let mount_point = normalize_mount_point(mount_point)?;
-        let file_system = self
+        let mounted = self
             .mounts
             .lock()
             .map_err(|error| EngineError::Internal(error.to_string()))?
             .remove(&mount_point)
             .ok_or_else(|| EngineError::NotMounted(mount_point.clone()))?;
-        file_system.stop();
+        mounted.file_system.stop();
+        restore_mount_directory(&mount_point, mounted.restore_empty_directory)?;
         Ok(())
     }
 }
@@ -564,7 +597,7 @@ fn normalize_mount_point(value: &str) -> EngineResult<String> {
         return Ok(format!("{}:", (bytes[0] as char).to_ascii_uppercase()));
     }
     if bytes.len() == 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\' {
-        return Ok(format!("{}:\\", (bytes[0] as char).to_ascii_uppercase()));
+        return Ok(format!("{}:", (bytes[0] as char).to_ascii_uppercase()));
     }
     let path = Path::new(&value);
     if !path.is_absolute() {
@@ -572,12 +605,108 @@ fn normalize_mount_point(value: &str) -> EngineResult<String> {
             "Windows mount point must be a drive letter or an absolute directory path".into(),
         ));
     }
-    if !path.is_dir() {
-        return Err(EngineError::InvalidConfig(format!(
-            "mount directory does not exist: {value}"
-        )));
+    if let Some(parent) = path.parent() {
+        if !parent.is_dir() {
+            return Err(EngineError::InvalidConfig(format!(
+                "mount directory parent does not exist: {}",
+                parent.display()
+            )));
+        }
     }
     Ok(value.trim_end_matches('\\').to_string())
+}
+
+fn prepare_directory_mount_point(mount_point: &str) -> EngineResult<bool> {
+    if is_drive_mount_point(mount_point) {
+        return Ok(false);
+    }
+    let path = Path::new(mount_point);
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(EngineError::InvalidConfig(format!(
+                "inspect mount directory {mount_point}: {error}"
+            )))
+        }
+    };
+    if is_reparse_point(&metadata) {
+        if stale_winfsp_mount_point(path) {
+            std::fs::remove_dir(path).map_err(|error| {
+                EngineError::Mount(format!(
+                    "remove stale WinFsp mount point {mount_point}: {error}"
+                ))
+            })?;
+            return Ok(false);
+        }
+        return Err(EngineError::AlreadyMounted(format!(
+            "mount point is an active or unknown reparse point: {mount_point}"
+        )));
+    }
+    if !metadata.is_dir() {
+        return Err(EngineError::InvalidConfig(format!(
+            "mount point is not a directory: {mount_point}"
+        )));
+    }
+    let mut entries = std::fs::read_dir(path).map_err(|error| {
+        EngineError::InvalidConfig(format!("read mount directory {mount_point}: {error}"))
+    })?;
+    if entries
+        .next()
+        .transpose()
+        .map_err(|error| {
+            EngineError::InvalidConfig(format!("read mount directory {mount_point}: {error}"))
+        })?
+        .is_some()
+    {
+        return Err(EngineError::InvalidConfig(format!(
+            "mount directory must be empty: {mount_point}"
+        )));
+    }
+    std::fs::remove_dir(path).map_err(|error| {
+        EngineError::Mount(format!("prepare mount directory {mount_point}: {error}"))
+    })?;
+    Ok(true)
+}
+
+fn restore_mount_directory(mount_point: &str, restore: bool) -> EngineResult<()> {
+    if !restore {
+        return Ok(());
+    }
+    match std::fs::create_dir(mount_point) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AlreadyExists
+                && Path::new(mount_point).is_dir() =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(EngineError::Mount(format!(
+            "restore mount directory {mount_point}: {error}"
+        ))),
+    }
+}
+
+fn is_drive_mount_point(mount_point: &str) -> bool {
+    let bytes = mount_point.as_bytes();
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+fn stale_winfsp_mount_point(path: &Path) -> bool {
+    if std::fs::metadata(path).is_ok() {
+        return false;
+    }
+    std::fs::read_link(path).is_ok_and(|target| {
+        let target = target.to_string_lossy().to_ascii_lowercase();
+        target.contains("winfsp") || target.contains("volume{")
+    })
 }
 
 fn file_info(metadata: &FileMetadata) -> FileInfo {
@@ -634,6 +763,21 @@ fn ntstatus(error: EngineError) -> NTSTATUS {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temporary_mount_point(test_name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "guglefs-{test_name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
 
     fn metadata(kind: EntryKind) -> FileMetadata {
         FileMetadata {
@@ -673,5 +817,41 @@ mod tests {
             ),
             Err(STATUS_NOT_A_DIRECTORY)
         );
+    }
+
+    #[test]
+    fn normalizes_drive_root_mount_points() {
+        assert_eq!(normalize_mount_point("z:").unwrap(), "Z:");
+        assert_eq!(normalize_mount_point("z:\\").unwrap(), "Z:");
+        assert_eq!(normalize_mount_point("Z:/").unwrap(), "Z:");
+    }
+
+    #[test]
+    fn temporarily_removes_and_restores_an_empty_mount_directory() {
+        let mount_point = temporary_mount_point("empty-directory");
+        std::fs::create_dir(&mount_point).unwrap();
+        let mount_point = mount_point.to_string_lossy().into_owned();
+
+        assert!(prepare_directory_mount_point(&mount_point).unwrap());
+        assert!(!Path::new(&mount_point).exists());
+        restore_mount_directory(&mount_point, true).unwrap();
+        assert!(Path::new(&mount_point).is_dir());
+
+        std::fs::remove_dir(mount_point).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_non_empty_mount_directory() {
+        let mount_point = temporary_mount_point("non-empty-directory");
+        std::fs::create_dir(&mount_point).unwrap();
+        std::fs::write(mount_point.join("keep.txt"), b"keep").unwrap();
+        let mount_point_text = mount_point.to_string_lossy().into_owned();
+
+        let error = prepare_directory_mount_point(&mount_point_text).unwrap_err();
+        assert!(error.to_string().contains("must be empty"));
+        assert!(mount_point.join("keep.txt").is_file());
+
+        std::fs::remove_file(mount_point.join("keep.txt")).unwrap();
+        std::fs::remove_dir(mount_point).unwrap();
     }
 }
