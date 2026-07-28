@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for the GugleFS configuration window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": ["core:default", "dialog:allow-open", "autostart:default"]
 }

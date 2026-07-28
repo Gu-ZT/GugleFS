@@ -38,7 +38,18 @@ pub fn run() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--tray-only"]),
+        ))
         .setup(|app| {
+            // 窗口在配置中默认隐藏：开机自启动携带 --tray-only 时保持托盘静默，
+            // 正常启动则立即显示主窗口。
+            let tray_only = std::env::args().any(|arg| arg == "--tray-only");
+            if !tray_only {
+                show_main_window(app.handle());
+            }
+
             let config_dir = app
                 .path()
                 .app_config_dir()

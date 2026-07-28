@@ -1,5 +1,6 @@
 import { reactive } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import type {
   AuthStatus,
   MappingRuntime,
@@ -26,6 +27,33 @@ export const store = reactive({
   } as PlatformInfo,
   mappings: [] as MappingRuntime[],
   notice: null as Notice | null,
+  autoLaunch: false,
+  autoLaunchBusy: false,
+
+  async initAutoLaunch(): Promise<void> {
+    try {
+      this.autoLaunch = await isEnabled();
+    } catch {
+      // 读取失败时保持关闭状态，不阻塞界面
+    }
+  },
+
+  async setAutoLaunch(on: boolean): Promise<void> {
+    if (this.autoLaunchBusy) return;
+    this.autoLaunchBusy = true;
+    try {
+      if (on) {
+        await enable();
+      } else {
+        await disable();
+      }
+      this.autoLaunch = await isEnabled();
+    } catch (error) {
+      this.setNotice(String(error));
+    } finally {
+      this.autoLaunchBusy = false;
+    }
+  },
 
   setNotice(message: string, kind: Notice["kind"] = "error"): void {
     this.notice = { message, kind };

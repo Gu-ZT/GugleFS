@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import appIconUrl from "../assets/app-icon.png";
 import { store } from "../store";
 import type { MappingRuntime } from "../types";
@@ -17,6 +17,10 @@ const mappingCount = computed(() => `${store.mappings.length} 个配置`);
 const showMacfuseBanner = computed(
   () => store.platformInfo.macfuseRequired && !store.platformInfo.macfuseInstalled,
 );
+
+onMounted(() => {
+  void store.initAutoLaunch();
+});
 
 function toggleMount(runtime: MappingRuntime): void {
   const { config } = runtime;
@@ -76,6 +80,21 @@ function installMacfuse(): void {
         </span>
       </nav>
       <div class="sidebar-footer">
+        <div class="autostart-row">
+          <span class="autostart-label">开机自启动</span>
+          <button
+            class="switch"
+            :class="{ on: store.autoLaunch }"
+            type="button"
+            role="switch"
+            :aria-checked="store.autoLaunch"
+            :disabled="store.autoLaunchBusy"
+            aria-label="开机自启动"
+            @click="store.setAutoLaunch(!store.autoLaunch)"
+          >
+            <span class="switch-knob" aria-hidden="true"></span>
+          </button>
+        </div>
         <button class="sidebar-lock" type="button" :disabled="locking" @click="lock">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
             <rect x="3" y="7" width="10" height="6" rx="1.5" />
