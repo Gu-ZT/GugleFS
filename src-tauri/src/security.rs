@@ -316,48 +316,45 @@ fn totp_from_secret(secret: &str) -> Result<TOTP, String> {
     .map_err(|error| format!("创建 2FA 验证器失败: {error}"))
 }
 
-#[cfg(target_os = "windows")]
 fn read_secure_value(service: &str, account: &str) -> Result<Option<String>, String> {
     let entry = keyring::Entry::new(service, account)
-        .map_err(|error| format!("打开 Windows 凭据失败: {error}"))?;
+        .map_err(|error| format!("打开{}失败: {error}", secure_store_name()))?;
     match entry.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(format!("读取 Windows 凭据失败: {error}")),
+        Err(error) => Err(format!("读取{}失败: {error}", secure_store_name())),
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn read_secure_value(_service: &str, _account: &str) -> Result<Option<String>, String> {
-    Err("当前平台尚未接入安全凭据库".into())
-}
-
-#[cfg(target_os = "windows")]
 fn write_secure_value(service: &str, account: &str, value: &str) -> Result<(), String> {
     keyring::Entry::new(service, account)
-        .map_err(|error| format!("打开 Windows 凭据失败: {error}"))?
+        .map_err(|error| format!("打开{}失败: {error}", secure_store_name()))?
         .set_password(value)
-        .map_err(|error| format!("保存 Windows 凭据失败: {error}"))
+        .map_err(|error| format!("保存{}失败: {error}", secure_store_name()))
 }
 
-#[cfg(not(target_os = "windows"))]
-fn write_secure_value(_service: &str, _account: &str, _value: &str) -> Result<(), String> {
-    Err("当前平台尚未接入安全凭据库".into())
-}
-
-#[cfg(target_os = "windows")]
 fn delete_secure_value(service: &str, account: &str) -> Result<(), String> {
     let entry = keyring::Entry::new(service, account)
-        .map_err(|error| format!("打开 Windows 凭据失败: {error}"))?;
+        .map_err(|error| format!("打开{}失败: {error}", secure_store_name()))?;
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(format!("删除 Windows 凭据失败: {error}")),
+        Err(error) => Err(format!("删除{}失败: {error}", secure_store_name())),
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn delete_secure_value(_service: &str, _account: &str) -> Result<(), String> {
-    Err("当前平台尚未接入安全凭据库".into())
+pub const fn secure_store_name() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "Windows 凭据管理器"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "macOS 钥匙串"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "Linux Secret Service"
+    }
 }
 
 #[cfg(test)]

@@ -92,6 +92,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::get_platform_info,
             commands::get_auth_status,
             commands::begin_2fa_setup,
             commands::confirm_2fa_setup,

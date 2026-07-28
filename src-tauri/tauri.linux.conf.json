@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "linux": {
+      "deb": {
+        "depends": ["fuse3", "libsecret-1-0"]
+      }
+    }
+  }
+}

@@ -11,13 +11,31 @@ permissions:
 
 jobs:
   quality:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install WinFsp SDK
+      - name: Install Windows mount SDK
+        if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/prepare-winfsp.ps1 -Install
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl file fuse3 libayatana-appindicator3-dev \
+            libdbus-1-dev libssl-dev librsvg2-dev libwebkit2gtk-4.1-dev \
+            libxdo-dev pkg-config wget
+
+      - name: Install macFUSE build runtime
+        if: runner.os == 'macOS'
+        run: brew install --cask macfuse
 
       - uses: pnpm/action-setup@v4
 
@@ -33,7 +51,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: .
-          key: windows-quality
+          key: ${{ runner.os }}-quality
 
       - run: pnpm install --frozen-lockfile
       - run: cargo fmt --all -- --check
@@ -101,36 +119,97 @@ jobs:
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name }}
-        run: |
-          VERSION="${TAG#v}" node -e "
-            const fs = require('fs');
-            const path = 'src-tauri/tauri.conf.json';
-            const config = JSON.parse(fs.readFileSync(path, 'utf8'));
-            config.version = process.env.VERSION;
-            fs.writeFileSync(path, JSON.stringify(config, null, 2));
-          "
+        run: node scripts/set-release-version.mjs "$TAG"
 
       - uses: pnpm/action-setup@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: .
           key: windows-x86_64-release
-
       - run: pnpm install --frozen-lockfile
-
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
           args: --target x86_64-pc-windows-msvc --bundles nsis
+
+  build-linux:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl file fuse3 libayatana-appindicator3-dev \
+            libdbus-1-dev libssl-dev librsvg2-dev libwebkit2gtk-4.1-dev \
+            libxdo-dev pkg-config wget
+      - name: Set app version from release tag
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: node scripts/set-release-version.mjs "$TAG"
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: linux-x86_64-release
+      - run: pnpm install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          args: --bundles deb,appimage
+
+  build-macos:
+    needs: prepare
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install macFUSE build runtime
+        run: brew install --cask macfuse
+      - name: Set app version from release tag
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: node scripts/set-release-version.mjs "$TAG"
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: macos-aarch64-release
+      - run: pnpm install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          args: --target aarch64-apple-darwin --bundles app,dmg

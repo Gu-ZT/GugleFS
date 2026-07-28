@@ -4,7 +4,7 @@ use guglefs_core::{
 };
 use guglefs_remote::{inspect_host_key, FtpFileSystem, SftpFileSystem, WebDavFileSystem};
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
     security::{AuthStatus, SecurityManager, TotpSetup},
@@ -12,6 +12,33 @@ use crate::{
 };
 
 type CommandResult<T> = Result<T, String>;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformInfo {
+    os: &'static str,
+    default_mount_point: String,
+    secure_store: &'static str,
+}
+
+#[tauri::command]
+pub fn get_platform_info(app: AppHandle) -> CommandResult<PlatformInfo> {
+    let default_mount_point = if cfg!(target_os = "windows") {
+        "Z:".to_string()
+    } else {
+        app.path()
+            .home_dir()
+            .map_err(|error| format!("读取用户目录失败: {error}"))?
+            .join("GugleFS")
+            .to_string_lossy()
+            .into_owned()
+    };
+    Ok(PlatformInfo {
+        os: std::env::consts::OS,
+        default_mount_point,
+        secure_store: crate::security::secure_store_name(),
+    })
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

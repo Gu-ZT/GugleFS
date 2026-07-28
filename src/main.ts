@@ -51,6 +51,18 @@ interface StartupMountResult {
   attempted: number;
 }
 
+interface PlatformInfo {
+  os: "windows" | "macos" | "linux";
+  defaultMountPoint: string;
+  secureStore: string;
+}
+
+let platformInfo: PlatformInfo = {
+  os: "windows",
+  defaultMountPoint: "Z:",
+  secureStore: "系统凭据库",
+};
+
 const app = document.querySelector<HTMLDivElement>("#app");
 
 if (!app) {
@@ -204,7 +216,10 @@ app.innerHTML = `
           </label>
           <label>
             <span>本地挂载点</span>
-            <input id="mount-point" name="mountPoint" required value="Z:" placeholder="Z: 或 /mnt/guglefs" />
+            <div class="input-action">
+              <input id="mount-point" name="mountPoint" required value="Z:" placeholder="Z: 或 /mnt/guglefs" />
+              <button id="choose-mount-point" class="secondary" type="button">选择</button>
+            </div>
           </label>
           <label class="checkbox-row full-width">
             <input id="auto-mount" name="autoMount" type="checkbox" />
@@ -236,7 +251,7 @@ app.innerHTML = `
           </label>
           <label class="checkbox-row full-width">
             <input id="remember-password" type="checkbox" checked />
-            <span>保存到 Windows 凭据管理器</span>
+            <span id="remember-password-label">保存到系统凭据库</span>
           </label>
         </div>
         <div id="mount-notice" class="notice dialog-notice" role="status" hidden></div>
@@ -417,7 +432,8 @@ function openForm(runtime?: MappingRuntime): void {
   getElement<HTMLInputElement>("host").value = runtime?.config.host ?? "";
   getElement<HTMLInputElement>("username").value = runtime?.config.username ?? "";
   getElement<HTMLInputElement>("remote-path").value = runtime?.config.remotePath ?? "/";
-  getElement<HTMLInputElement>("mount-point").value = runtime?.config.mountPoint ?? "Z:";
+  getElement<HTMLInputElement>("mount-point").value =
+    runtime?.config.mountPoint ?? platformInfo.defaultMountPoint;
   getElement<HTMLInputElement>("ftp-tls").checked = runtime?.config.ftpTls ?? false;
   const privateKeyAuth = privateKeyConfig !== null;
   getElement<HTMLSelectElement>("sftp-auth").value = privateKeyAuth ? "private_key" : "password";
@@ -584,7 +600,7 @@ function renderMappings(): void {
     remove.className = "danger compact";
     remove.textContent = "删除";
     remove.addEventListener("click", () => void deleteMapping(config.id));
-    remove.disabled = runtime.state !== "unmounted";
+    remove.disabled = runtime.state === "mounting" || runtime.state === "mounted";
     actions.append(mount, edit, remove);
 
     item.append(identity, destination, actions);
@@ -759,6 +775,7 @@ testConnectionButton.addEventListener("click", () => {
     } catch (error) {
       showDialogNotice(String(error));
     } finally {
+      testConnectionButton.disabled = false;
       updateProtocolControls();
     }
   })();
@@ -785,6 +802,15 @@ getElement<HTMLButtonElement>("choose-key").addEventListener("click", () => {
     .then((selected) => {
       if (typeof selected === "string") {
         getElement<HTMLInputElement>("key-path").value = selected;
+      }
+    })
+    .catch((error) => showDialogNotice(String(error)));
+});
+getElement<HTMLButtonElement>("choose-mount-point").addEventListener("click", () => {
+  void open({ multiple: false, directory: true })
+    .then((selected) => {
+      if (typeof selected === "string") {
+        getElement<HTMLInputElement>("mount-point").value = selected;
       }
     })
     .catch((error) => showDialogNotice(String(error)));
@@ -821,4 +847,21 @@ getElement<HTMLButtonElement>("close-mount-dialog").addEventListener("click", ()
 getElement<HTMLButtonElement>("cancel-mount-dialog").addEventListener("click", () => mountDialog.close());
 mountDialog.addEventListener("close", clearMountDialog);
 
-void initializeAuth();
+async function initialize(): Promise<void> {
+  try {
+    platformInfo = await invoke<PlatformInfo>("get_platform_info");
+    getElement<HTMLSpanElement>("remember-password-label").textContent =
+      `保存到${platformInfo.secureStore}`;
+    const mountPoint = getElement<HTMLInputElement>("mount-point");
+    mountPoint.value = platformInfo.defaultMountPoint;
+    mountPoint.placeholder = platformInfo.os === "windows"
+      ? "Z: 或 C:\\Mounts\\GugleFS"
+      : platformInfo.defaultMountPoint;
+  } catch (error) {
+    showAuthNotice(String(error));
+    return;
+  }
+  await initializeAuth();
+}
+
+void initialize();
