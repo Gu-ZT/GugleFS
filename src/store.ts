@@ -29,6 +29,31 @@ export const store = reactive({
   notice: null as Notice | null,
   autoLaunch: false,
   autoLaunchBusy: false,
+  occupiedLetters: [] as string[],
+
+  async refreshOccupiedLetters(): Promise<void> {
+    if (this.platformInfo.os !== "windows") {
+      this.occupiedLetters = [];
+      return;
+    }
+    try {
+      this.occupiedLetters = await invoke<string[]>("occupied_drive_letters");
+    } catch {
+      // 读取失败时保持上次结果，不阻塞表单
+    }
+  },
+
+  nextFreeMountPoint(): string {
+    if (this.platformInfo.os === "windows") {
+      for (let code = 90; code >= 65; code -= 1) {
+        const letter = String.fromCharCode(code);
+        if (!this.occupiedLetters.includes(letter)) {
+          return `${letter}:`;
+        }
+      }
+    }
+    return this.platformInfo.defaultMountPoint;
+  },
 
   async initAutoLaunch(): Promise<void> {
     try {

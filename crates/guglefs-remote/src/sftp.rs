@@ -185,26 +185,32 @@ impl SftpFileSystem {
         })
     }
 
-    async fn open_connection(&self) -> EngineResult<SftpConnection> {
+    async fn open_ssh(&self) -> EngineResult<client::Handle<HostKeyVerifier>> {
         let config = Arc::new(ssh_config());
         let verifier = HostKeyVerifier {
             expected: self.host_key_fingerprint.clone(),
         };
         let stream = connect_target(&self.host, self.port, self.proxy.as_ref()).await?;
-        let mut ssh = client::connect_stream(config, stream, verifier)
+        client::connect_stream(config, stream, verifier)
             .await
             .map_err(|error| {
                 EngineError::Remote(format!(
                     "SSH connect or host key verification failed: {error}"
                 ))
-            })?;
-        let authentication = match &self.auth {
+            })
+    }
+
+    async fn primary_auth(
+        &self,
+        ssh: &mut client::Handle<HostKeyVerifier>,
+    ) -> EngineResult<client::AuthResult> {
+        match &self.auth {
             SftpAuth::Password(password) => ssh
                 .authenticate_password(&self.username, password)
                 .await
                 .map_err(|error| {
                     EngineError::Remote(format!("SSH password authentication: {error}"))
-                })?,
+                }),
             SftpAuth::PrivateKey { key, passphrase } => {
                 let key = russh::keys::decode_secret_key(key, passphrase.as_deref()).map_err(
                     |error| EngineError::InvalidConfig(format!("decode SSH private key: {error}")),
@@ -223,9 +229,35 @@ impl SftpFileSystem {
                 .await
                 .map_err(|error| {
                     EngineError::Remote(format!("SSH private key authentication: {error}"))
-                })?
+                })
             }
-        };
+        }
+    }
+
+    /// 探测服务器在主认证（密码或私钥）之后是否仍要求 keyboard-interactive
+    /// 二次验证。SSH 服务器以 partial_success 失败并在剩余方法中列出
+    /// keyboard-interactive 时视为需要 MFA。
+    pub async fn detect_mfa_requirement(&self) -> EngineResult<bool> {
+        let mut ssh = self.open_ssh().await?;
+        let authentication = self.primary_auth(&mut ssh).await?;
+        let _ = ssh
+            .disconnect(Disconnect::ByApplication, "probe complete", "")
+            .await;
+        Ok(match authentication {
+            client::AuthResult::Success => false,
+            client::AuthResult::Failure {
+                remaining_methods,
+                partial_success,
+            } => {
+                partial_success
+                    && remaining_methods.contains(&russh::MethodKind::KeyboardInteractive)
+            }
+        })
+    }
+
+    async fn open_connection(&self) -> EngineResult<SftpConnection> {
+        let mut ssh = self.open_ssh().await?;
+        let authentication = self.primary_auth(&mut ssh).await?;
         let authenticated = if authentication.success() {
             true
         } else if self.totp_required {

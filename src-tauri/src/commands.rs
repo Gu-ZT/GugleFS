@@ -175,6 +175,46 @@ pub fn list_mappings(state: State<'_, AppState>) -> CommandResult<Vec<MappingRun
     state.manager.list().map_err(|error| error.to_string())
 }
 
+/// Windows 下返回已被占用的盘符：本地驱动器，以及 GugleFS 当前已挂载或
+/// 正在挂载的映射。未挂载的映射配置不计入。其他平台始终返回空列表。
+#[tauri::command]
+pub fn occupied_drive_letters(state: State<'_, AppState>) -> CommandResult<Vec<String>> {
+    state.security.require_unlocked()?;
+    if !cfg!(target_os = "windows") {
+        return Ok(Vec::new());
+    }
+    let mut occupied: Vec<String> = ('A'..='Z')
+        .filter(|letter| std::path::Path::new(&format!("{letter}:\\")).exists())
+        .map(|letter| letter.to_string())
+        .collect();
+    if let Ok(runtimes) = state.manager.list() {
+        for runtime in runtimes {
+            if !matches!(
+                runtime.state,
+                MappingState::Mounted | MappingState::Mounting
+            ) {
+                continue;
+            }
+            if let Some(letter) = drive_letter_of(&runtime.config.mount_point) {
+                if !occupied.contains(&letter) {
+                    occupied.push(letter);
+                }
+            }
+        }
+    }
+    Ok(occupied)
+}
+
+fn drive_letter_of(mount_point: &str) -> Option<String> {
+    let mut chars = mount_point.chars();
+    let letter = chars.next()?.to_ascii_uppercase();
+    if letter.is_ascii_alphabetic() && chars.next() == Some(':') {
+        Some(letter.to_string())
+    } else {
+        None
+    }
+}
+
 #[tauri::command]
 pub fn save_mapping(
     state: State<'_, AppState>,
@@ -265,6 +305,33 @@ pub async fn test_remote_connection(
         .metadata("/")
         .await
         .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn detect_sftp_mfa_requirement(
+    state: State<'_, AppState>,
+    config: MappingConfig,
+    password: Option<String>,
+    private_key: Option<String>,
+) -> CommandResult<bool> {
+    state.security.require_unlocked()?;
+    if config.protocol != Protocol::Sftp {
+        return Ok(false);
+    }
+    config.validate().map_err(|error| error.to_string())?;
+    let secrets = resolve_secrets(
+        &state,
+        &config,
+        normalized_secret(password),
+        normalized_secret(private_key),
+        None,
+    )?;
+    let remote =
+        SftpFileSystem::from_config(&config, secrets).map_err(|error| error.to_string())?;
+    remote
+        .detect_mfa_requirement()
+        .await
         .map_err(|error| error.to_string())
 }
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { computed, reactive, ref } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { store } from "../store";
 import type { AuthMethod, MappingConfig, MappingRuntime, Protocol } from "../types";
 
@@ -41,6 +41,22 @@ let trustedHostKeyFingerprint: string | null = null;
 const notice = ref<{ message: string; kind: "error" | "success" } | null>(null);
 const testing = ref(false);
 const saving = ref(false);
+const mountPointInput = ref<HTMLInputElement | null>(null);
+
+const mountPointError = computed(() => {
+  if (store.platformInfo.os !== "windows") {
+    return null;
+  }
+  const match = /^([A-Za-z]):[\\/]?$/.exec(draft.mountPoint.trim());
+  if (match && store.occupiedLetters.includes(match[1].toUpperCase())) {
+    return `盘符 ${match[1].toUpperCase()}: 已被占用，请选择其他盘符`;
+  }
+  return null;
+});
+
+watch(mountPointError, (error) => {
+  mountPointInput.value?.setCustomValidity(error ?? "");
+});
 
 const privateKeyAuth = computed(
   () => draft.protocol === "sftp" && draft.sftpAuth === "private_key",
@@ -131,12 +147,33 @@ async function chooseMountPoint(): Promise<void> {
   }
 }
 
+const MFA_DETECTED_MESSAGE =
+  "检测到服务器要求二次验证（MFA），已自动勾选“需要 MFA”并禁用自动挂载，请输入当前 6 位 TOTP 验证码";
+
+async function probeMfaRequirement(config: MappingConfig): Promise<boolean> {
+  if (config.protocol !== "sftp" || config.sftpTotpRequired) {
+    return false;
+  }
+  const required = await invoke<boolean>("detect_sftp_mfa_requirement", {
+    config,
+    password: draft.password || null,
+    privateKey: draft.privateKey.trim() || null,
+  });
+  if (required) {
+    draft.sftpTotpEnabled = true;
+  }
+  return required;
+}
+
 async function save(): Promise<void> {
   saving.value = true;
   notice.value = null;
   try {
     const config = readMappingConfig();
     await verifySftpHostKey(config);
+    if (config.autoMount && (await probeMfaRequirement(config))) {
+      throw new Error(`${MFA_DETECTED_MESSAGE}后重新保存`);
+    }
     await invoke("save_mapping", {
       config,
       password: draft.password || null,
@@ -168,6 +205,10 @@ async function testConnection(): Promise<void> {
       throw new Error("测试 MFA 连接时请输入当前 6 位 TOTP 验证码");
     }
     await verifySftpHostKey(config);
+    if (await probeMfaRequirement(config)) {
+      notice.value = { message: `${MFA_DETECTED_MESSAGE}后重新测试`, kind: "success" };
+      return;
+    }
     await invoke("test_remote_connection", {
       config,
       password: draft.password || null,
@@ -182,8 +223,11 @@ async function testConnection(): Promise<void> {
   }
 }
 
-function open(runtime?: MappingRuntime): void {
+async function open(runtime?: MappingRuntime): Promise<void> {
   editing.value = runtime ?? null;
+  if (!runtime) {
+    await store.refreshOccupiedLetters();
+  }
   const config = runtime?.config;
   const auth = config?.auth;
   const privateKeyConfig = auth?.type === "private_key" ? auth : null;
@@ -207,7 +251,7 @@ function open(runtime?: MappingRuntime): void {
   draft.sftpTotpCode = "";
   draft.ftpTls = config?.ftpTls ?? false;
   draft.remotePath = config?.remotePath ?? "/";
-  draft.mountPoint = config?.mountPoint ?? store.platformInfo.defaultMountPoint;
+  draft.mountPoint = config?.mountPoint ?? store.nextFreeMountPoint();
   draft.autoMount = config?.autoMount ?? false;
   draft.ignoreSystemProxy = config?.ignoreSystemProxy ?? false;
   notice.value = null;
@@ -335,9 +379,16 @@ defineExpose({ open });
         <label>
           <span>本地挂载点</span>
           <div class="input-action">
-            <input v-model="draft.mountPoint" required :placeholder="store.platformInfo.os === 'windows' ? 'Z: 或 C:\\Mounts\\GugleFS' : store.platformInfo.defaultMountPoint" />
+            <input
+              ref="mountPointInput"
+              v-model="draft.mountPoint"
+              required
+              :class="{ 'input-error': mountPointError }"
+              :placeholder="store.platformInfo.os === 'windows' ? 'Z: 或 C:\\Mounts\\GugleFS' : store.platformInfo.defaultMountPoint"
+            />
             <button class="secondary" type="button" @click="chooseMountPoint">选择</button>
           </div>
+          <span v-if="mountPointError" class="field-error" role="alert">{{ mountPointError }}</span>
         </label>
         <label class="checkbox-row full-width">
           <input v-model="draft.autoMount" type="checkbox" :disabled="totpActive" />
