@@ -32,6 +32,7 @@ pub enum AuthMethod {
         #[serde(default)]
         credential_id: Option<String>,
     },
+    SshAgent,
     Anonymous,
 }
 
@@ -102,6 +103,11 @@ impl MappingConfig {
                 "MFA is only supported for SFTP mappings".into(),
             ));
         }
+        if self.protocol != Protocol::Sftp && matches!(&self.auth, AuthMethod::SshAgent) {
+            return Err(crate::EngineError::InvalidConfig(
+                "SSH Agent authentication is only supported for SFTP mappings".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -115,6 +121,7 @@ impl MappingConfig {
                 key_id: None,
                 credential_id: None,
             },
+            AuthMethod::SshAgent => AuthMethod::SshAgent,
             AuthMethod::Anonymous => AuthMethod::Anonymous,
         };
         self.auto_mount = false;
@@ -193,6 +200,34 @@ mod tests {
         .unwrap();
 
         assert!(!config.sftp_totp_required);
+    }
+
+    #[test]
+    fn ssh_agent_authentication_is_portable_and_sftp_only() {
+        let mut config = MappingConfig {
+            id: "id".into(),
+            name: "name".into(),
+            protocol: Protocol::Sftp,
+            host: "files.example.com".into(),
+            port: 22,
+            username: Some("user".into()),
+            auth: AuthMethod::SshAgent,
+            remote_path: "/".into(),
+            mount_point: "/mnt/files".into(),
+            ftp_tls: false,
+            host_key_fingerprint: Some("SHA256:test".into()),
+            sftp_totp_required: false,
+            ignore_system_proxy: false,
+            auto_mount: true,
+        };
+
+        assert!(config.validate().is_ok());
+        let portable = config.clone().portable();
+        assert_eq!(portable.auth, AuthMethod::SshAgent);
+        assert!(!portable.auto_mount);
+
+        config.protocol = Protocol::Webdav;
+        assert!(config.validate().is_err());
     }
 
     #[test]

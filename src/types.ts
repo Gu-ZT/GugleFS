@@ -9,6 +9,7 @@ export type AuthMethod =
       key_id: string | null;
       credential_id: string | null;
     }
+  | { type: "ssh_agent" }
   | { type: "anonymous" };
 
 export interface MappingConfig {
@@ -79,6 +80,8 @@ export function hasPersistedAuthentication(config: MappingConfig): boolean {
       return config.auth.credential_id !== null;
     case "private_key":
       return config.auth.key_path !== null || config.auth.key_id !== null;
+    case "ssh_agent":
+      return true;
     case "anonymous":
       return true;
   }

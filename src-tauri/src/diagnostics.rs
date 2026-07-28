@@ -215,6 +215,7 @@ fn mapping_summary(runtime: MappingRuntime) -> MappingSummary {
         auth: match runtime.config.auth {
             AuthMethod::Password { .. } => "password",
             AuthMethod::PrivateKey { .. } => "private_key",
+            AuthMethod::SshAgent => "ssh_agent",
             AuthMethod::Anonymous => "anonymous",
         },
         auto_mount: runtime.config.auto_mount,

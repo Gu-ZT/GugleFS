@@ -12,7 +12,7 @@
 
 GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置一次映射并挂载后，远程路径就像本机上的普通磁盘或目录一样，可以被任何应用直接使用，而不仅是文件传输窗口。
 
-- **三种协议，一个界面** —— FTP/FTPS、SFTP（密码、私钥、MFA）、WebDAV（HTTPS）
+- **三种协议，一个界面** —— FTP/FTPS、SFTP（密码、私钥、SSH Agent、MFA）、WebDAV（HTTPS）
 - **原生挂载** —— Windows 使用 WinFsp 2.1，Linux 使用 FUSE3，macOS 使用 FUSE-T 1.2.7
 - **启动即锁定** —— TOTP 双因素认证保护应用启动，凭据保存在系统安全凭据库
 - **经得起断网** —— 空闲 keepalive、静默重连、重启后恢复挂载
@@ -34,7 +34,7 @@ GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置�
   <img src="docs/main.png" width="720" alt="映射列表 —— 已挂载的 SFTP 磁盘">
 </p>
 
-添加映射的表单随协议适配——SFTP 提供密码、OpenSSH/PEM 私钥和 MFA 选项，WebDAV 则保持精简。每个映射保存前都可以先测试连接：
+添加映射的表单随协议适配——SFTP 提供密码、OpenSSH/PEM 私钥、SSH Agent 和 MFA 选项，WebDAV 则保持精简。每个映射保存前都可以先测试连接：
 
 <table>
   <tr>
@@ -45,7 +45,7 @@ GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置�
     <td width="50%"><img src="docs/add-webdav.png" alt="添加映射 —— WebDAV"></td>
   </tr>
   <tr>
-    <td align="center"><sub>SFTP：密码、私钥或 MFA 认证</sub></td>
+    <td align="center"><sub>SFTP：密码、私钥、SSH Agent 或 MFA 认证</sub></td>
     <td align="center"><sub>WebDAV（HTTPS）</sub></td>
   </tr>
 </table>
@@ -118,7 +118,9 @@ FUSE-T 二进制许可允许非商业用途再分发；商业使用或随商业�
 
 FTP 默认使用被动模式，支持标准 FTP 和显式 FTPS；不支持已弃用的隐式 FTPS。
 
-SFTP 支持密码认证，以及 OpenSSH/PEM 私钥认证。私钥文件不限制扩展名，可直接选择 `ssh-keygen` 生成的 `id_ed25519`、`id_rsa` 等文件；也可以粘贴私钥。文件模式只保存路径，粘贴模式会将私钥分块保存到当前平台的安全凭据库。加密私钥的口令可以单独保存。首次连接会显示服务器 SHA-256 主机密钥指纹，确认后固定到映射配置；后续密钥变化必须重新确认。
+SFTP 支持密码、OpenSSH/PEM 私钥和 SSH Agent 认证。Unix 通过 `SSH_AUTH_SOCK` 连接 Agent；Windows 会依次尝试配置的 Agent 管道、标准 OpenSSH Agent 管道和 Pageant。私钥文件不限制扩展名，可直接选择 `ssh-keygen` 生成的 `id_ed25519`、`id_rsa` 等文件；也可以粘贴私钥。文件模式只保存路径，粘贴模式会将私钥分块保存到当前平台的安全凭据库。加密私钥的口令可以单独保存。
+
+首次连接会显示服务器 SHA-256 主机密钥指纹，确认后固定到映射配置；后续密钥变化必须重新确认。映射表单可以导入 OpenSSH `known_hosts`，支持哈希主机名和非标准端口条目；只有条目与服务器当前实际提供的密钥一致时才会导入。
 
 SFTP 服务器需要 MFA 时，可在映射中勾选“需要 MFA”，并在测试连接或挂载时手动输入当前 6 位 TOTP 验证码。验证码仅用于本次请求，不会保存到配置或系统凭据库；此类映射不支持自动挂载。空闲 SSH 传输会定时发送协议层 keepalive；只要已认证的 SSH 传输仍然存活，SFTP session 关闭后会静默重建，不需要再次输入验证码。如果 SSH 传输本身已经断开，则必须使用新的验证码手动重新挂载。非 MFA 连接仍会自动重连，并对可安全重试的操作重试一次。
 

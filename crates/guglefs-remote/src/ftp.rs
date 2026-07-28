@@ -321,9 +321,9 @@ impl FtpFileSystem {
                 "anonymous".into(),
                 password.unwrap_or_else(|| "anonymous@guglefs.local".into()),
             ),
-            AuthMethod::PrivateKey { .. } => {
+            AuthMethod::PrivateKey { .. } | AuthMethod::SshAgent => {
                 return Err(EngineError::InvalidConfig(
-                    "SSH private keys are not valid FTP credentials".into(),
+                    "SSH authentication is not valid for FTP".into(),
                 ));
             }
         };

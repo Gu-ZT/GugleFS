@@ -12,6 +12,7 @@ GugleFS 的重要变更记录在此。Release 描述会读取与应用版本匹�
 - 修复 macOS FUSE-T CI 链接，并增加直接链接 `libfuse-t` 的本地兼容 pkg-config shim。
 - 增加经过认证的远程目录浏览器，用于选择 FTP、FTPS、SFTP 和 WebDAV 映射根目录。
 - 增加脱敏 JSONL 操作日志、日志轮转和用户可导出的 JSON 诊断报告。
+- 为 SFTP 映射增加跨平台 SSH Agent 认证，以及经过服务器当前密钥校验的 OpenSSH `known_hosts` 导入。
 
 ## [0.7.0] - 2026-07-29
 

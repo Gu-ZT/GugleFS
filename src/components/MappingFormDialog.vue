@@ -26,7 +26,7 @@ const draft = reactive({
   port: 22,
   username: "",
   password: "",
-  sftpAuth: "password" as "password" | "private_key",
+  sftpAuth: "password" as "password" | "private_key" | "ssh_agent",
   keySource: "local" as "local" | "pasted",
   keyPath: "",
   privateKey: "",
@@ -43,7 +43,7 @@ const editing = ref<MappingRuntime | null>(null);
 const editingCredentialId = ref<string | null>(null);
 const editingAuthType = ref<AuthMethod["type"] | null>(null);
 const editingKeyId = ref<string | null>(null);
-let trustedHostKeyFingerprint: string | null = null;
+const trustedHostKeyFingerprint = ref<string | null>(null);
 
 const notice = ref<{ message: string; kind: "error" | "success" } | null>(null);
 const testing = ref(false);
@@ -74,6 +74,9 @@ watch(mountPointError, (error) => {
 const privateKeyAuth = computed(
   () => draft.protocol === "sftp" && draft.sftpAuth === "private_key",
 );
+const sshAgentAuth = computed(
+  () => draft.protocol === "sftp" && draft.sftpAuth === "ssh_agent",
+);
 const totpActive = computed(() => draft.protocol === "sftp" && draft.sftpTotpEnabled);
 const credentialLabel = computed(() => (privateKeyAuth.value ? "私钥口令" : "密码"));
 const passwordPlaceholder = computed(() =>
@@ -93,7 +96,9 @@ function readMappingConfig(): MappingConfig {
     type: "password",
     credential_id: preserveCredential ? editingCredentialId.value : null,
   };
-  if (privateKeyAuth.value) {
+  if (sshAgentAuth.value) {
+    auth = { type: "ssh_agent" };
+  } else if (privateKeyAuth.value) {
     auth = {
       type: "private_key",
       key_path: draft.keySource === "local" ? draft.keyPath.trim() || null : null,
@@ -115,7 +120,8 @@ function readMappingConfig(): MappingConfig {
     remotePath: draft.remotePath.trim(),
     mountPoint: draft.mountPoint.trim(),
     ftpTls: draft.protocol === "ftp" && draft.ftpTls,
-    hostKeyFingerprint: draft.protocol === "sftp" ? trustedHostKeyFingerprint : null,
+    hostKeyFingerprint:
+      draft.protocol === "sftp" ? trustedHostKeyFingerprint.value : null,
     sftpTotpRequired: totpActive.value,
     ignoreSystemProxy: draft.ignoreSystemProxy,
     autoMount: totpActive.value ? false : draft.autoMount,
@@ -129,16 +135,16 @@ async function verifySftpHostKey(config: MappingConfig): Promise<void> {
     port: config.port,
     ignoreSystemProxy: config.ignoreSystemProxy,
   });
-  if (fingerprint !== trustedHostKeyFingerprint) {
-    const changed = trustedHostKeyFingerprint !== null;
+  if (fingerprint !== trustedHostKeyFingerprint.value) {
+    const changed = trustedHostKeyFingerprint.value !== null;
     const accepted = window.confirm(
       changed
-        ? `SSH 服务器主机密钥已变化。\n\n原指纹：${trustedHostKeyFingerprint}\n新指纹：${fingerprint}\n\n只有确认服务器已更换密钥时才继续。`
+        ? `SSH 服务器主机密钥已变化。\n\n原指纹：${trustedHostKeyFingerprint.value}\n新指纹：${fingerprint}\n\n只有确认服务器已更换密钥时才继续。`
         : `确认 SSH 服务器主机密钥指纹：\n\n${fingerprint}`,
     );
     if (!accepted) throw new Error("未信任 SSH 服务器主机密钥");
   }
-  trustedHostKeyFingerprint = fingerprint;
+  trustedHostKeyFingerprint.value = fingerprint;
   config.hostKeyFingerprint = fingerprint;
 }
 
@@ -236,6 +242,35 @@ async function testConnection(): Promise<void> {
   }
 }
 
+async function importKnownHosts(): Promise<void> {
+  notice.value = null;
+  try {
+    const selected = await openFileDialog({
+      multiple: false,
+      directory: false,
+      title: "选择 OpenSSH known_hosts 文件",
+    });
+    if (typeof selected !== "string") return;
+    const fingerprints = await invoke<string[]>("import_sftp_known_hosts", {
+      path: selected,
+      host: draft.host.trim(),
+      port: draft.port,
+    });
+    const liveFingerprint = await invoke<string>("inspect_sftp_host_key", {
+      host: draft.host.trim(),
+      port: draft.port,
+      ignoreSystemProxy: draft.ignoreSystemProxy,
+    });
+    if (!fingerprints.includes(liveFingerprint)) {
+      throw new Error("known_hosts 中没有当前服务器提供的主机密钥");
+    }
+    trustedHostKeyFingerprint.value = liveFingerprint;
+    notice.value = { message: "已从 known_hosts 验证并导入主机密钥", kind: "success" };
+  } catch (error) {
+    notice.value = { message: String(error), kind: "error" };
+  }
+}
+
 function normalizedRemotePath(path: string): string {
   const segments = path.trim().split("/").filter(Boolean);
   return segments.length === 0 ? "/" : `/${segments.join("/")}`;
@@ -326,7 +361,7 @@ async function open(runtime?: MappingRuntime): Promise<void> {
   editingCredentialId.value = auth && "credential_id" in auth ? auth.credential_id : null;
   editingAuthType.value = auth?.type ?? null;
   editingKeyId.value = privateKeyConfig?.key_id ?? null;
-  trustedHostKeyFingerprint = config?.hostKeyFingerprint ?? null;
+  trustedHostKeyFingerprint.value = config?.hostKeyFingerprint ?? null;
 
   draft.id = config?.id ?? "";
   draft.name = config?.name ?? "";
@@ -335,7 +370,8 @@ async function open(runtime?: MappingRuntime): Promise<void> {
   draft.port = config?.port ?? 22;
   draft.username = config?.username ?? "";
   draft.password = "";
-  draft.sftpAuth = privateKeyConfig ? "private_key" : "password";
+  draft.sftpAuth =
+    auth?.type === "ssh_agent" ? "ssh_agent" : privateKeyConfig ? "private_key" : "password";
   draft.keySource = privateKeyConfig?.key_id ? "pasted" : "local";
   draft.keyPath = privateKeyConfig?.key_path ?? "";
   draft.privateKey = "";
@@ -360,7 +396,7 @@ function onDialogClose(): void {
   editingCredentialId.value = null;
   editingAuthType.value = null;
   editingKeyId.value = null;
-  trustedHostKeyFingerprint = null;
+  trustedHostKeyFingerprint.value = null;
   draft.password = "";
   draft.privateKey = "";
   draft.sftpTotpCode = "";
@@ -416,9 +452,23 @@ defineExpose({ open });
           <select v-model="draft.sftpAuth">
             <option value="password">密码</option>
             <option value="private_key">SSH 私钥</option>
+            <option value="ssh_agent">SSH Agent</option>
           </select>
         </label>
-        <label>
+        <label v-if="draft.protocol === 'sftp'" class="full-width">
+          <span>SSH 主机密钥</span>
+          <div class="input-action">
+            <input
+              :value="trustedHostKeyFingerprint ?? ''"
+              readonly
+              placeholder="首次连接时确认，或从 known_hosts 导入"
+            />
+            <button class="secondary" type="button" @click="importKnownHosts">
+              导入 known_hosts
+            </button>
+          </div>
+        </label>
+        <label v-if="!sshAgentAuth">
           <span>{{ credentialLabel }}</span>
           <input
             v-model="draft.password"

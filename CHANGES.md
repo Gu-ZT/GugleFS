@@ -12,6 +12,7 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 - Fixed macOS FUSE-T CI linking and added a local compatibility pkg-config shim for `libfuse-t`.
 - Added an authenticated remote directory browser for choosing FTP, FTPS, SFTP, and WebDAV mapping roots.
 - Added sanitized JSONL operation logs with rotation and user-exportable JSON diagnostic reports.
+- Added cross-platform SSH Agent authentication and verified OpenSSH `known_hosts` import for SFTP mappings.
 
 ## [0.7.0] - 2026-07-29
 

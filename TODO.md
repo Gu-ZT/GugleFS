@@ -37,9 +37,9 @@
 - [x] SFTP：允许选择 `ssh-keygen` 生成的无扩展名私钥文件
 - [x] SFTP：空闲连接发送 SSH keepalive，SSH 仍存活时静默重建 SFTP session，非 MFA 传输断开后自动重连并安全重试
 - [x] SFTP：支持需要 MFA 的手动连接测试和挂载，TOTP 验证码仅用于当前请求且不持久化
-- [ ] SFTP：支持 SSH Agent
+- [x] SFTP：支持 Unix `SSH_AUTH_SOCK`、Windows OpenSSH 命名管道和 Pageant SSH Agent
 - [x] SFTP：实现 SHA-256 主机指纹固定和首次连接确认流程
-- [ ] SFTP：支持导入 OpenSSH `known_hosts`
+- [x] SFTP：支持导入 OpenSSH `known_hosts`，并用服务器当前密钥校验普通、哈希主机名及非标准端口条目
 - [x] WebDAV：接入 Rust HTTPS/WebDAV 客户端基础依赖，首个版本仅允许 HTTPS
 - [x] WebDAV：实现 `PROPFIND`、`GET`、`PUT`、`MKCOL`、`MOVE` 和 `DELETE` 基础请求
 - [x] WebDAV：将运行时凭据接入连接测试

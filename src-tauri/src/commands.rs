@@ -4,7 +4,9 @@ use guglefs_core::{
     AuthMethod, ConfigDocument, ConnectionSecrets, EngineError, EntryKind, MappingConfig,
     MappingManager, MappingRuntime, MappingState, MountDriver, Protocol, RemoteFileSystem,
 };
-use guglefs_remote::{inspect_host_key, FtpFileSystem, SftpFileSystem, WebDavFileSystem};
+use guglefs_remote::{
+    inspect_host_key, known_host_fingerprints, FtpFileSystem, SftpFileSystem, WebDavFileSystem,
+};
 use serde::Serialize;
 use tauri::{path::BaseDirectory, AppHandle, Manager, State};
 
@@ -390,6 +392,21 @@ pub async fn inspect_sftp_host_key(
     inspect_host_key(host.trim(), port, ignore_system_proxy)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn import_sftp_known_hosts(
+    state: State<'_, AppState>,
+    path: PathBuf,
+    host: String,
+    port: u16,
+) -> CommandResult<Vec<String>> {
+    state.security.require_unlocked()?;
+    validate_host_and_port(&host, port)?;
+    if !path.is_file() {
+        return Err("选择的 OpenSSH known_hosts 文件不存在".into());
+    }
+    known_host_fingerprints(&path, host.trim(), port).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -802,6 +819,11 @@ fn save_mapping_and_credentials(
                     });
             }
         }
+        AuthMethod::SshAgent => {
+            if credential.is_some() || private_key.is_some() {
+                return Err("SSH Agent 认证不能保存密码或私钥".into());
+            }
+        }
         AuthMethod::Anonymous => {
             if credential.is_some() || private_key.is_some() {
                 return Err("匿名认证不能保存密码或 SSH 私钥".into());
@@ -969,7 +991,7 @@ fn credential_id(config: &MappingConfig) -> Option<&str> {
         AuthMethod::Password { credential_id } | AuthMethod::PrivateKey { credential_id, .. } => {
             credential_id.as_deref()
         }
-        AuthMethod::Anonymous => None,
+        AuthMethod::SshAgent | AuthMethod::Anonymous => None,
     }
 }
 
@@ -986,7 +1008,7 @@ fn has_persisted_authentication(config: &MappingConfig) -> bool {
         AuthMethod::PrivateKey {
             key_path, key_id, ..
         } => key_path.is_some() || key_id.is_some(),
-        AuthMethod::Anonymous => true,
+        AuthMethod::SshAgent | AuthMethod::Anonymous => true,
     }
 }
 

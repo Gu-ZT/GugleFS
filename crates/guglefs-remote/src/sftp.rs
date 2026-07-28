@@ -1,6 +1,7 @@
 use std::{
     future::Future,
     io::SeekFrom,
+    path::Path,
     pin::Pin,
     sync::{Arc, Mutex as StdMutex},
     time::{Duration, UNIX_EPOCH},
@@ -13,7 +14,13 @@ use guglefs_core::{
 };
 use russh::{
     client::{self, KeyboardInteractiveAuthResponse, Prompt},
-    keys::PrivateKeyWithHashAlg,
+    keys::{
+        agent::{
+            client::{AgentClient, AgentStream},
+            AgentIdentity,
+        },
+        PrivateKeyWithHashAlg,
+    },
     Disconnect,
 };
 use russh_sftp::{
@@ -36,6 +43,7 @@ enum SftpAuth {
         key: String,
         passphrase: Option<String>,
     },
+    Agent,
 }
 
 struct HostKeyVerifier {
@@ -160,6 +168,14 @@ impl SftpFileSystem {
                     passphrase: secrets.credential,
                 }
             }
+            AuthMethod::SshAgent => {
+                if secrets.credential.is_some() || secrets.private_key.is_some() {
+                    return Err(EngineError::InvalidConfig(
+                        "SSH Agent authentication does not accept stored credentials".into(),
+                    ));
+                }
+                SftpAuth::Agent
+            }
             AuthMethod::Anonymous => {
                 return Err(EngineError::InvalidConfig(
                     "anonymous authentication is not supported by SFTP".into(),
@@ -231,6 +247,7 @@ impl SftpFileSystem {
                     EngineError::Remote(format!("SSH private key authentication: {error}"))
                 })
             }
+            SftpAuth::Agent => authenticate_with_agent(ssh, &self.username).await,
         }
     }
 
@@ -269,7 +286,7 @@ impl SftpFileSystem {
                 .ok_or_else(sftp_totp_required_error)?;
             let password = match &self.auth {
                 SftpAuth::Password(password) => Some(password.as_str()),
-                SftpAuth::PrivateKey { .. } => None,
+                SftpAuth::PrivateKey { .. } | SftpAuth::Agent => None,
             };
             authenticate_keyboard_interactive(&mut ssh, &self.username, password, &totp_code)
                 .await?
@@ -693,6 +710,106 @@ pub async fn inspect_host_key(
     fingerprint.ok_or_else(|| EngineError::Remote("SSH server did not provide a host key".into()))
 }
 
+pub fn known_host_fingerprints(path: &Path, host: &str, port: u16) -> EngineResult<Vec<String>> {
+    let mut fingerprints = russh::keys::known_hosts::known_host_keys_path(host, port, path)
+        .map_err(|error| EngineError::InvalidConfig(format!("read OpenSSH known_hosts: {error}")))?
+        .into_iter()
+        .map(|(_, key)| key_fingerprint(&key))
+        .collect::<Vec<_>>();
+    fingerprints.sort_unstable();
+    fingerprints.dedup();
+    Ok(fingerprints)
+}
+
+type DynamicAgentClient = AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>;
+
+async fn authenticate_with_agent(
+    ssh: &mut client::Handle<HostKeyVerifier>,
+    username: &str,
+) -> EngineResult<client::AuthResult> {
+    let mut agent = connect_ssh_agent().await?;
+    let identities = agent
+        .request_identities()
+        .await
+        .map_err(|error| EngineError::Remote(format!("read identities from SSH Agent: {error}")))?;
+    if identities.is_empty() {
+        return Err(EngineError::filesystem(
+            FsErrorCode::PermissionDenied,
+            "SSH Agent has no identities",
+        ));
+    }
+    let hash_algorithm = ssh
+        .best_supported_rsa_hash()
+        .await
+        .map_err(|error| EngineError::Remote(format!("negotiate SSH key algorithm: {error}")))?
+        .flatten();
+    let mut last_failure = None;
+    for identity in identities {
+        let authentication = match identity {
+            AgentIdentity::PublicKey { key, .. } => {
+                ssh.authenticate_publickey_with(username, key, hash_algorithm, &mut agent)
+                    .await
+            }
+            AgentIdentity::Certificate { certificate, .. } => {
+                ssh.authenticate_certificate_with(username, certificate, hash_algorithm, &mut agent)
+                    .await
+            }
+        }
+        .map_err(|error| EngineError::Remote(format!("SSH Agent authentication: {error}")))?;
+        if authentication.success() {
+            return Ok(authentication);
+        }
+        last_failure = Some(authentication);
+    }
+    last_failure.ok_or_else(|| {
+        EngineError::filesystem(
+            FsErrorCode::PermissionDenied,
+            "SSH Agent authentication was rejected",
+        )
+    })
+}
+
+#[cfg(unix)]
+async fn connect_ssh_agent() -> EngineResult<DynamicAgentClient> {
+    AgentClient::connect_env()
+        .await
+        .map(AgentClient::dynamic)
+        .map_err(|error| EngineError::Remote(format!("connect SSH Agent: {error}")))
+}
+
+#[cfg(windows)]
+async fn connect_ssh_agent() -> EngineResult<DynamicAgentClient> {
+    use std::{ffi::OsString, time::Duration};
+
+    const OPENSSH_AGENT_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
+    let mut pipes = std::env::var_os("SSH_AUTH_SOCK")
+        .filter(|path| !path.is_empty())
+        .into_iter()
+        .collect::<Vec<OsString>>();
+    if !pipes
+        .iter()
+        .any(|path| path == std::ffi::OsStr::new(OPENSSH_AGENT_PIPE))
+    {
+        pipes.push(OPENSSH_AGENT_PIPE.into());
+    }
+    for pipe in pipes {
+        if let Ok(Ok(agent)) = tokio::time::timeout(
+            Duration::from_secs(2),
+            AgentClient::connect_named_pipe(pipe),
+        )
+        .await
+        {
+            return Ok(agent.dynamic());
+        }
+    }
+    if let Ok(agent) = AgentClient::connect_pageant().await {
+        return Ok(agent.dynamic());
+    }
+    Err(EngineError::Remote(
+        "cannot connect to Windows OpenSSH Agent or Pageant".into(),
+    ))
+}
+
 fn ssh_config() -> client::Config {
     client::Config {
         keepalive_interval: Some(SSH_KEEPALIVE_INTERVAL),
@@ -808,6 +925,30 @@ mod tests {
         assert_eq!(config.inactivity_timeout, None);
         assert_eq!(config.keepalive_interval, Some(SSH_KEEPALIVE_INTERVAL));
         assert_eq!(config.keepalive_max, 3);
+    }
+
+    #[test]
+    fn imports_plain_and_hashed_openssh_known_hosts_entries() {
+        let directory =
+            std::env::temp_dir().join(format!("guglefs-known-hosts-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("known_hosts");
+        std::fs::write(
+            &path,
+            concat!(
+                "[localhost]:13265 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n",
+                "|1|O33ESRMWPVkMYIwJ1Uw+n877jTo=|nuuC5vEqXlEZ/8BXQR7m619W6Ak= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF\n",
+            ),
+        )
+        .unwrap();
+
+        let plain = known_host_fingerprints(&path, "localhost", 13265).unwrap();
+        let hashed = known_host_fingerprints(&path, "example.com", 22).unwrap();
+
+        assert_eq!(plain.len(), 1);
+        assert_eq!(hashed.len(), 1);
+        assert_ne!(plain, hashed);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

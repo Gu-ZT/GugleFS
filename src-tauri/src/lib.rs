@@ -127,6 +127,7 @@ pub fn run() {
             commands::save_mapping,
             commands::delete_mapping,
             commands::inspect_sftp_host_key,
+            commands::import_sftp_known_hosts,
             commands::test_remote_connection,
             commands::open_remote_browser,
             commands::list_remote_directories,

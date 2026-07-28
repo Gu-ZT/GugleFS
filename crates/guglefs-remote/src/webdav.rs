@@ -102,9 +102,9 @@ impl WebDavFileSystem {
         let username = match &config.auth {
             AuthMethod::Password { .. } => config.username.clone(),
             AuthMethod::Anonymous => None,
-            AuthMethod::PrivateKey { .. } => {
+            AuthMethod::PrivateKey { .. } | AuthMethod::SshAgent => {
                 return Err(EngineError::InvalidConfig(
-                    "private keys are not valid WebDAV credentials".into(),
+                    "SSH authentication is not valid for WebDAV".into(),
                 ));
             }
         };

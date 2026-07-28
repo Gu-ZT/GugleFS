@@ -4,5 +4,5 @@ mod sftp;
 mod webdav;
 
 pub use ftp::FtpFileSystem;
-pub use sftp::{inspect_host_key, SftpFileSystem};
+pub use sftp::{inspect_host_key, known_host_fingerprints, SftpFileSystem};
 pub use webdav::WebDavFileSystem;
