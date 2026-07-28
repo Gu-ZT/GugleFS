@@ -13,6 +13,7 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 - Added an authenticated remote directory browser for choosing FTP, FTPS, SFTP, and WebDAV mapping roots.
 - Added sanitized JSONL operation logs with rotation and user-exportable JSON diagnostic reports.
 - Added cross-platform SSH Agent authentication and verified OpenSSH `known_hosts` import for SFTP mappings.
+- Added conditional WebDAV writes using ETag/Last-Modified validators, conflict detection, safe offset-zero writes, and nonzero truncation.
 
 ## [0.7.0] - 2026-07-29
 

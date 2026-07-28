@@ -5,8 +5,12 @@ use guglefs_core::{
 };
 use percent_encoding::percent_decode_str;
 use quick_xml::{events::Event, Reader};
-use reqwest::{header, Client, Method, Proxy, RequestBuilder, StatusCode, Url};
-use std::{future::Future, pin::Pin, time::Duration};
+use reqwest::{
+    header::{self, HeaderValue},
+    Client, Method, Proxy, RequestBuilder, StatusCode, Url,
+};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 
 use crate::proxy::{system_proxy, ProxyConfig};
 
@@ -16,6 +20,7 @@ pub struct WebDavFileSystem {
     base_url: Url,
     username: Option<String>,
     password: Option<String>,
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl WebDavFileSystem {
@@ -76,6 +81,7 @@ impl WebDavFileSystem {
             base_url,
             username,
             password,
+            write_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -181,6 +187,50 @@ impl WebDavFileSystem {
         parse_propfind(&body)
     }
 
+    async fn resource(&self, path: &str) -> EngineResult<Resource> {
+        self.propfind(path, "0")
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| EngineError::Remote("WebDAV returned no resource metadata".into()))
+    }
+
+    async fn read_current_version(&self, path: &str, resource: &Resource) -> EngineResult<Vec<u8>> {
+        if resource.metadata.size == 0 {
+            return Ok(Vec::new());
+        }
+        let response = apply_write_condition(self.request(Method::GET, path), resource)
+            .send()
+            .await
+            .map_err(|error| EngineError::Remote(format!("WebDAV GET request: {error}")))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(status_error(status, "read current version", &body));
+        }
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| EngineError::Remote(format!("read WebDAV GET response: {error}")))
+    }
+
+    async fn put_current_version(
+        &self,
+        path: &str,
+        data: Vec<u8>,
+        resource: &Resource,
+    ) -> EngineResult<u64> {
+        let length = data.len() as u64;
+        let response = apply_write_condition(self.request(Method::PUT, path), resource)
+            .body(data)
+            .send()
+            .await
+            .map_err(|error| EngineError::Remote(format!("WebDAV PUT request: {error}")))?;
+        Self::finish(response, "conditional write").await?;
+        Ok(length)
+    }
+
     async fn put(&self, path: &str, data: Vec<u8>) -> EngineResult<u64> {
         let length = data.len() as u64;
         let response = self
@@ -263,12 +313,7 @@ impl RemoteFileSystem for WebDavFileSystem {
     }
 
     async fn metadata(&self, path: &str) -> EngineResult<FileMetadata> {
-        let resources = self.propfind(path, "0").await?;
-        resources
-            .into_iter()
-            .next()
-            .map(|resource| resource.metadata)
-            .ok_or_else(|| EngineError::Remote("WebDAV returned no resource metadata".into()))
+        self.resource(path).await.map(|resource| resource.metadata)
     }
 
     async fn read_dir(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
@@ -340,17 +385,18 @@ impl RemoteFileSystem for WebDavFileSystem {
     }
 
     async fn write(&self, path: &str, offset: u64, data: Vec<u8>) -> EngineResult<u64> {
-        if offset == 0 {
-            return self.put(path, data).await;
+        if data.is_empty() {
+            return Ok(0);
         }
-        let metadata = self.metadata(path).await?;
-        if metadata.kind == EntryKind::Directory {
+        let _guard = self.write_lock.lock().await;
+        let resource = self.resource(path).await?;
+        if resource.metadata.kind == EntryKind::Directory {
             return Err(EngineError::filesystem(
                 FsErrorCode::IsDirectory,
                 format!("cannot write a directory: {path}"),
             ));
         }
-        let existing = self.read_range(path, 0, metadata.size).await?;
+        let existing = self.read_current_version(path, &resource).await?;
         let start = usize::try_from(offset)
             .map_err(|_| EngineError::InvalidConfig("write offset is too large".into()))?;
         let end = start
@@ -362,7 +408,7 @@ impl RemoteFileSystem for WebDavFileSystem {
         }
         content[start..end].copy_from_slice(&data);
         let written = data.len() as u64;
-        self.put(path, content).await?;
+        self.put_current_version(path, content, &resource).await?;
         Ok(written)
     }
 
@@ -431,12 +477,37 @@ impl RemoteFileSystem for WebDavFileSystem {
             Err(_) => Err(move_error),
         }
     }
+
+    async fn truncate(&self, path: &str, size: u64) -> EngineResult<()> {
+        let _guard = self.write_lock.lock().await;
+        let resource = self.resource(path).await?;
+        if resource.metadata.kind == EntryKind::Directory {
+            return Err(EngineError::filesystem(
+                FsErrorCode::IsDirectory,
+                format!("cannot truncate a directory: {path}"),
+            ));
+        }
+        if resource.metadata.size == size {
+            return Ok(());
+        }
+        let new_size = usize::try_from(size)
+            .map_err(|_| EngineError::InvalidConfig("truncate size is too large".into()))?;
+        let mut content = if size == 0 {
+            Vec::new()
+        } else {
+            self.read_current_version(path, &resource).await?
+        };
+        content.resize(new_size, 0);
+        self.put_current_version(path, content, &resource).await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
 struct Resource {
     href: String,
     metadata: FileMetadata,
+    etag: Option<String>,
 }
 
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
@@ -445,6 +516,7 @@ const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
     <d:resourcetype />
     <d:getcontentlength />
     <d:getlastmodified />
+    <d:getetag />
   </d:prop>
 </d:propfind>"#;
 
@@ -463,6 +535,7 @@ fn parse_propfind(body: &[u8]) -> EngineResult<Vec<Resource>> {
                 b"href" => field = Field::Href,
                 b"getcontentlength" => field = Field::Size,
                 b"getlastmodified" => field = Field::Modified,
+                b"getetag" => field = Field::Etag,
                 b"resourcetype" => field = Field::ResourceType,
                 _ => {}
             },
@@ -480,6 +553,7 @@ fn parse_propfind(body: &[u8]) -> EngineResult<Vec<Resource>> {
                         Field::Href => resource.href = value.into_owned(),
                         Field::Size => resource.size = value.parse().unwrap_or_default(),
                         Field::Modified => resource.modified = Some(value.into_owned()),
+                        Field::Etag => resource.etag = Some(value.into_owned()),
                         Field::None | Field::ResourceType => {}
                     }
                 }
@@ -494,6 +568,7 @@ fn parse_propfind(body: &[u8]) -> EngineResult<Vec<Resource>> {
                                 size: resource.size,
                                 modified: resource.modified,
                             },
+                            etag: resource.etag,
                         });
                     }
                     field = Field::None;
@@ -515,6 +590,7 @@ struct ParsedResource {
     kind: EntryKind,
     size: u64,
     modified: Option<String>,
+    etag: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -523,7 +599,31 @@ enum Field {
     Href,
     Size,
     Modified,
+    Etag,
     ResourceType,
+}
+
+fn apply_write_condition(request: RequestBuilder, resource: &Resource) -> RequestBuilder {
+    if let Some(etag) = resource.etag.as_deref().and_then(strong_etag) {
+        return request.header(header::IF_MATCH, etag);
+    }
+    if let Some(modified) = resource
+        .metadata
+        .modified
+        .as_deref()
+        .and_then(|value| HeaderValue::from_str(value.trim()).ok())
+    {
+        return request.header(header::IF_UNMODIFIED_SINCE, modified);
+    }
+    request
+}
+
+fn strong_etag(value: &str) -> Option<HeaderValue> {
+    let value = value.trim();
+    if value.starts_with("W/") || !value.starts_with('"') || !value.ends_with('"') {
+        return None;
+    }
+    HeaderValue::from_str(value).ok()
 }
 
 fn normalize_path(path: &str) -> String {
@@ -581,7 +681,8 @@ fn status_error(status: StatusCode, operation: &str, body: &str) -> EngineError 
             FsErrorCode::AlreadyExists
         }
         StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED => FsErrorCode::Unsupported,
-        StatusCode::PRECONDITION_FAILED => FsErrorCode::AlreadyExists,
+        StatusCode::PRECONDITION_FAILED if operation == "create file" => FsErrorCode::AlreadyExists,
+        StatusCode::PRECONDITION_FAILED => FsErrorCode::Busy,
         StatusCode::CONFLICT | StatusCode::RANGE_NOT_SATISFIABLE => FsErrorCode::InvalidArgument,
         StatusCode::LOCKED => FsErrorCode::Busy,
         _ => FsErrorCode::RemoteIo,
@@ -618,7 +719,7 @@ mod tests {
     fn parses_multistatus_resources() {
         let xml = br#"<d:multistatus xmlns:d="DAV:">
           <d:response><d:href>/remote/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>
-          <d:response><d:href>/remote/file.txt</d:href><d:propstat><d:prop><d:getcontentlength>12</d:getcontentlength></d:prop></d:propstat></d:response>
+          <d:response><d:href>/remote/file.txt</d:href><d:propstat><d:prop><d:getcontentlength>12</d:getcontentlength><d:getetag>&quot;version-1&quot;</d:getetag></d:prop></d:propstat></d:response>
         </d:multistatus>"#;
 
         let resources = parse_propfind(xml).unwrap();
@@ -626,6 +727,7 @@ mod tests {
         assert_eq!(resources.len(), 2);
         assert_eq!(resources[0].metadata.kind, EntryKind::Directory);
         assert_eq!(resources[1].metadata.size, 12);
+        assert_eq!(resources[1].etag.as_deref(), Some("\"version-1\""));
     }
 
     #[test]
@@ -637,6 +739,14 @@ mod tests {
         assert_eq!(
             status_error(StatusCode::LOCKED, "PUT", "").code(),
             FsErrorCode::Busy
+        );
+        assert_eq!(
+            status_error(StatusCode::PRECONDITION_FAILED, "conditional write", "").code(),
+            FsErrorCode::Busy
+        );
+        assert_eq!(
+            status_error(StatusCode::PRECONDITION_FAILED, "create file", "").code(),
+            FsErrorCode::AlreadyExists
         );
         assert_eq!(
             status_error(StatusCode::BAD_GATEWAY, "GET", "").code(),
@@ -779,7 +889,68 @@ mod tests {
         assert!(String::from_utf8_lossy(&requests[0]).starts_with("PROPFIND /remote/file.txt"));
         assert!(String::from_utf8_lossy(&requests[1]).starts_with("GET /remote/file.txt"));
         assert!(String::from_utf8_lossy(&requests[2]).starts_with("PUT /remote/file.txt"));
+        assert!(String::from_utf8_lossy(&requests[2])
+            .lines()
+            .any(|line| line == "if-match: \"version-1\""));
         assert!(String::from_utf8_lossy(&requests[2]).ends_with("heXYo"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn writes_at_offset_zero_without_truncating_the_existing_tail() {
+        let (base_url, server, requests) = spawn_test_server(3, "hello").await;
+        let file_system = test_file_system(&base_url);
+
+        assert_eq!(
+            file_system
+                .write("/file.txt", 0, b"XY".to_vec())
+                .await
+                .unwrap(),
+            2
+        );
+        server.await.unwrap();
+
+        let requests = requests.lock().unwrap();
+        assert!(String::from_utf8_lossy(&requests[2]).ends_with("XYllo"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn truncates_with_the_resource_version_condition() {
+        let (base_url, server, requests) = spawn_test_server(3, "hello").await;
+        let file_system = test_file_system(&base_url);
+
+        file_system.truncate("/file.txt", 3).await.unwrap();
+        server.await.unwrap();
+
+        let request = String::from_utf8_lossy(&requests.lock().unwrap()[2]).into_owned();
+        assert!(request
+            .lines()
+            .any(|line| line == "if-match: \"version-1\""));
+        assert!(request.ends_with("hel"));
+    }
+
+    #[test]
+    fn uses_last_modified_when_only_a_weak_etag_is_available() {
+        let file_system = WebDavFileSystem::new("https://example.test/remote", None, None).unwrap();
+        let resource = Resource {
+            href: "/remote/file.txt".into(),
+            metadata: FileMetadata {
+                kind: EntryKind::File,
+                size: 5,
+                modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".into()),
+            },
+            etag: Some("W/\"version-1\"".into()),
+        };
+
+        let request =
+            apply_write_condition(file_system.request(Method::PUT, "/file.txt"), &resource)
+                .build()
+                .unwrap();
+
+        assert!(request.headers().get(header::IF_MATCH).is_none());
+        assert_eq!(
+            request.headers().get(header::IF_UNMODIFIED_SINCE).unwrap(),
+            "Wed, 21 Oct 2015 07:28:00 GMT"
+        );
     }
 
     fn test_file_system(base_url: &str) -> WebDavFileSystem {
@@ -788,6 +959,7 @@ mod tests {
             base_url: Url::parse(base_url).unwrap(),
             username: None,
             password: None,
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -837,7 +1009,7 @@ mod tests {
                     }
                     "PROPFIND" => (
                         "207 Multi-Status",
-                        "<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/remote/file.txt</d:href><d:propstat><d:prop><d:getcontentlength>5</d:getcontentlength></d:prop></d:propstat></d:response></d:multistatus>",
+                        "<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/remote/file.txt</d:href><d:propstat><d:prop><d:getcontentlength>5</d:getcontentlength><d:getlastmodified>Wed, 21 Oct 2015 07:28:00 GMT</d:getlastmodified><d:getetag>&quot;version-1&quot;</d:getetag></d:prop></d:propstat></d:response></d:multistatus>",
                         "application/xml",
                     ),
                     "GET" => (get_status, get_body, "text/plain"),

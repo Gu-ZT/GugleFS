@@ -123,7 +123,7 @@ The first connection displays the server's SHA-256 host-key fingerprint; subsequ
 
 For an SFTP server that requires MFA, enable `Requires MFA` on the mapping and enter the current six-digit TOTP code when testing or mounting. The code is used only for that request and is never stored. MFA mappings cannot mount automatically. Idle SSH transports send protocol-level keepalives, and GugleFS silently reopens a closed SFTP subsystem while the authenticated SSH transport remains active. If the SSH transport itself closes, the mapping must be mounted manually with a new TOTP code. Non-MFA connections can reconnect and safely retry eligible operations automatically.
 
-WebDAV requires HTTPS and keeps redirects on the original origin.
+WebDAV requires HTTPS and keeps redirects on the original origin. Read-modify-write operations and truncation use a strong ETag with `If-Match`; weak or unavailable ETags fall back to `If-Unmodified-Since` when Last-Modified is present. A failed condition is returned to the filesystem as a busy/conflict error instead of silently overwriting a newer version. Servers that provide neither validator are serialized within one GugleFS mount process, but concurrent writes from another client can still use last-writer-wins semantics; GugleFS does not issue WebDAV `LOCK`/`UNLOCK` requests.
 
 The mapping form can browse remote directories before saving. It uses the current form credentials, system proxy setting, SFTP host-key verification, and transient MFA code; selecting a directory writes its absolute path back to the mapping without persisting any temporary secret.
 

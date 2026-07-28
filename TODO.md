@@ -46,9 +46,9 @@
 - [x] WebDAV：将系统凭据接入挂载编排
 - [x] WebDAV：支持 Basic 认证
 - [ ] WebDAV：支持 Digest，评估 Bearer Token 与客户端证书
-- [ ] WebDAV：正确处理 ETag 和条件请求
+- [x] WebDAV：使用强 ETag `If-Match`，弱 ETag 回退 `If-Unmodified-Since`，并将条件失败映射为并发冲突
 - [x] WebDAV：正确处理 Range 请求和同源重定向
-- [ ] WebDAV：实现 `LOCK` / `UNLOCK` 或明确无锁服务器的并发写入策略
+- [x] WebDAV：采用条件写回；无 ETag/Last-Modified 的服务器在单个挂载进程内串行写入，并明确外部并发的最后写入覆盖风险
 - [ ] WebDAV：验证 Nextcloud、ownCloud、Apache mod_dav 和常见云存储兼容性
 - [x] WebDAV：限制跨域重定向时的认证头转发，防止凭据泄漏
 - [x] FTP/FTPS/SFTP/WebDAV：读取 Windows 注册表或 Unix 环境变量中的系统代理，并支持按映射忽略
