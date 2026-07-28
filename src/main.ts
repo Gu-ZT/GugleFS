@@ -27,6 +27,7 @@ interface MappingConfig {
   mountPoint: string;
   ftpTls: boolean;
   hostKeyFingerprint: string | null;
+  ignoreSystemProxy: boolean;
   autoMount: boolean;
 }
 
@@ -55,12 +56,18 @@ interface PlatformInfo {
   os: "windows" | "macos" | "linux";
   defaultMountPoint: string;
   secureStore: string;
+  macfuseRequired: boolean;
+  macfuseInstalled: boolean;
+  macfuseInstallerBundled: boolean;
 }
 
 let platformInfo: PlatformInfo = {
   os: "windows",
   defaultMountPoint: "Z:",
   secureStore: "系统凭据库",
+  macfuseRequired: false,
+  macfuseInstalled: true,
+  macfuseInstallerBundled: false,
 };
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -125,6 +132,15 @@ app.innerHTML = `
         <button id="new-mapping" class="primary" type="button">添加映射</button>
       </div>
     </header>
+    <section id="mount-runtime-banner" class="runtime-banner" aria-live="polite" hidden>
+      <div class="runtime-banner-content">
+        <div>
+          <strong>需要安装 macFUSE</strong>
+          <p>安装后请在 macOS“隐私与安全性”中批准系统扩展，再重新启动 GugleFS。</p>
+        </div>
+        <button id="install-macfuse" class="secondary" type="button">打开 macFUSE 安装器</button>
+      </div>
+    </section>
     <main>
       <section class="mapping-section" aria-labelledby="mapping-title">
         <div class="section-heading">
@@ -224,6 +240,10 @@ app.innerHTML = `
           <label class="checkbox-row full-width">
             <input id="auto-mount" name="autoMount" type="checkbox" />
             <span>解锁后自动挂载</span>
+          </label>
+          <label class="checkbox-row full-width">
+            <input id="ignore-system-proxy" name="ignoreSystemProxy" type="checkbox" />
+            <span>忽略系统代理</span>
           </label>
         </div>
         <div id="dialog-notice" class="notice dialog-notice" role="status" hidden></div>
@@ -443,6 +463,8 @@ function openForm(runtime?: MappingRuntime): void {
   getElement<HTMLInputElement>("key-path").value = privateKeyConfig?.key_path ?? "";
   getElement<HTMLTextAreaElement>("private-key").value = "";
   getElement<HTMLInputElement>("auto-mount").checked = runtime?.config.autoMount ?? false;
+  getElement<HTMLInputElement>("ignore-system-proxy").checked =
+    runtime?.config.ignoreSystemProxy ?? false;
   updateProtocolControls();
   dialog.showModal();
 }
@@ -498,6 +520,7 @@ function readMappingConfig(): MappingConfig {
     mountPoint: getElement<HTMLInputElement>("mount-point").value.trim(),
     ftpTls: protocol === "ftp" && getElement<HTMLInputElement>("ftp-tls").checked,
     hostKeyFingerprint: protocol === "sftp" ? trustedHostKeyFingerprint : null,
+    ignoreSystemProxy: getElement<HTMLInputElement>("ignore-system-proxy").checked,
     autoMount: getElement<HTMLInputElement>("auto-mount").checked,
   };
 }
@@ -507,6 +530,7 @@ async function verifySftpHostKey(config: MappingConfig): Promise<void> {
   const fingerprint = await invoke<string>("inspect_sftp_host_key", {
     host: config.host,
     port: config.port,
+    ignoreSystemProxy: config.ignoreSystemProxy,
   });
   if (fingerprint !== trustedHostKeyFingerprint) {
     const changed = trustedHostKeyFingerprint !== null;
@@ -797,7 +821,6 @@ getElement<HTMLButtonElement>("choose-key").addEventListener("click", () => {
   void open({
     multiple: false,
     directory: false,
-    filters: [{ name: "SSH private keys", extensions: ["pem", "key"] }],
   })
     .then((selected) => {
       if (typeof selected === "string") {
@@ -818,6 +841,16 @@ getElement<HTMLButtonElement>("choose-mount-point").addEventListener("click", ()
 getElement<HTMLButtonElement>("new-mapping").addEventListener("click", () => openForm());
 getElement<HTMLButtonElement>("empty-add").addEventListener("click", () => openForm());
 getElement<HTMLButtonElement>("refresh").addEventListener("click", () => void loadMappings());
+getElement<HTMLButtonElement>("install-macfuse").addEventListener("click", () => {
+  const button = getElement<HTMLButtonElement>("install-macfuse");
+  button.disabled = true;
+  void invoke("open_macfuse_installer")
+    .then(() => showNotice("已打开 macFUSE 安装器", "success"))
+    .catch((error) => showNotice(String(error)))
+    .finally(() => {
+      button.disabled = false;
+    });
+});
 getElement<HTMLButtonElement>("close-dialog").addEventListener("click", () => dialog.close());
 getElement<HTMLButtonElement>("cancel-dialog").addEventListener("click", () => dialog.close());
 dialog.addEventListener("close", () => {
@@ -857,6 +890,10 @@ async function initialize(): Promise<void> {
     mountPoint.placeholder = platformInfo.os === "windows"
       ? "Z: 或 C:\\Mounts\\GugleFS"
       : platformInfo.defaultMountPoint;
+    const runtimeBanner = getElement<HTMLElement>("mount-runtime-banner");
+    runtimeBanner.hidden = !platformInfo.macfuseRequired || platformInfo.macfuseInstalled;
+    getElement<HTMLButtonElement>("install-macfuse").hidden =
+      !platformInfo.macfuseInstallerBundled;
   } catch (error) {
     showAuthNotice(String(error));
     return;

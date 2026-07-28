@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+base64.workspace = true
 guglefs-core = { path = "../guglefs-core" }
 percent-encoding.workspace = true
 quick-xml.workspace = true
@@ -15,6 +16,9 @@ russh = { version = "0.61.1", default-features = false, features = ["ring", "rsa
 russh-sftp = "2.3.0"
 suppaftp = { version = "7.0.7", features = ["tokio-async-native-tls"] }
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }

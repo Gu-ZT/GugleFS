@@ -5,8 +5,10 @@ use guglefs_core::{
 };
 use percent_encoding::percent_decode_str;
 use quick_xml::{events::Event, Reader};
-use reqwest::{header, Client, Method, RequestBuilder, StatusCode, Url};
+use reqwest::{header, Client, Method, Proxy, RequestBuilder, StatusCode, Url};
 use std::{future::Future, pin::Pin, time::Duration};
+
+use crate::proxy::{system_proxy, ProxyConfig};
 
 #[derive(Debug, Clone)]
 pub struct WebDavFileSystem {
@@ -29,9 +31,24 @@ impl WebDavFileSystem {
                 "WebDAV requires an HTTPS URL with a host".into(),
             ));
         }
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+        Self::new_with_proxy(base_url, username, password, None)
+    }
+
+    fn new_with_proxy(
+        base_url: impl AsRef<str>,
+        username: Option<String>,
+        password: Option<String>,
+        proxy: Option<ProxyConfig>,
+    ) -> EngineResult<Self> {
+        let base_url = Url::parse(base_url.as_ref())
+            .map_err(|error| EngineError::InvalidConfig(format!("invalid WebDAV URL: {error}")))?;
+        if base_url.scheme() != "https" || base_url.host_str().is_none() {
+            return Err(EngineError::InvalidConfig(
+                "WebDAV requires an HTTPS URL with a host".into(),
+            ));
+        }
+        let mut client = Client::builder().timeout(Duration::from_secs(30)).redirect(
+            reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 5 {
                     return attempt.stop();
                 }
@@ -43,7 +60,15 @@ impl WebDavFileSystem {
                     return attempt.stop();
                 }
                 attempt.follow()
-            }))
+            }),
+        );
+        client = match proxy {
+            Some(proxy) => client.proxy(Proxy::all(proxy.url().as_str()).map_err(|error| {
+                EngineError::InvalidConfig(format!("invalid WebDAV proxy: {error}"))
+            })?),
+            None => client.no_proxy(),
+        };
+        let client = client
             .build()
             .map_err(|error| EngineError::Internal(format!("create WebDAV client: {error}")))?;
         Ok(Self {
@@ -83,7 +108,8 @@ impl WebDavFileSystem {
                 ));
             }
         };
-        Self::new(url.as_str(), username, password)
+        let proxy = system_proxy(config)?;
+        Self::new_with_proxy(url.as_str(), username, password, proxy)
     }
 
     fn endpoint(&self, path: &str) -> Url {

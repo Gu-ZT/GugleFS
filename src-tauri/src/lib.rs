@@ -93,6 +93,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_platform_info,
+            commands::open_macfuse_installer,
             commands::get_auth_status,
             commands::begin_2fa_setup,
             commands::confirm_2fa_setup,

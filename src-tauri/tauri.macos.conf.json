@@ -1,6 +1,10 @@
 {
   "bundle": {
     "targets": ["app", "dmg"],
+    "resources": {
+      "resources/macos/macfuse-5.3.3.dmg": "macfuse-5.3.3.dmg",
+      "../THIRD_PARTY_LICENSES/macFUSE-LICENSE.txt": "licenses/macFUSE-LICENSE.txt"
+    },
     "macOS": {
       "minimumSystemVersion": "11.0"
     }

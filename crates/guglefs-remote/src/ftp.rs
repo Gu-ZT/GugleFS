@@ -7,14 +7,42 @@ use guglefs_core::{
 };
 use suppaftp::{
     list::{File, ListParser},
-    tokio::{AsyncFtpStream, AsyncNativeTlsConnector, AsyncNativeTlsFtpStream},
+    tokio::{
+        AsyncFtpStream, AsyncNativeTlsConnector, AsyncNativeTlsFtpStream, ImplAsyncFtpStream,
+        TokioTlsStream,
+    },
     types::FileType,
+    FtpError,
 };
 use tokio::{io::AsyncReadExt, sync::Mutex};
+
+use crate::proxy::{connect_target, system_proxy, ProxyConfig};
 
 enum FtpConnection {
     Plain(AsyncFtpStream),
     Secure(AsyncNativeTlsFtpStream),
+}
+
+fn add_proxy_data_stream<T>(
+    stream: ImplAsyncFtpStream<T>,
+    proxy: Option<&ProxyConfig>,
+) -> ImplAsyncFtpStream<T>
+where
+    T: TokioTlsStream + Send,
+{
+    if let Some(proxy) = proxy.cloned() {
+        stream.passive_stream_builder(move |address| {
+            let proxy = proxy.clone();
+            Box::pin(async move {
+                proxy
+                    .connect(&address.ip().to_string(), address.port())
+                    .await
+                    .map_err(FtpError::ConnectionError)
+            })
+        })
+    } else {
+        stream
+    }
 }
 
 impl FtpConnection {
@@ -24,24 +52,41 @@ impl FtpConnection {
         username: &str,
         password: &str,
         explicit_tls: bool,
+        proxy: Option<&ProxyConfig>,
     ) -> EngineResult<Self> {
         let mut connection = if explicit_tls {
             let connector =
                 AsyncNativeTlsConnector::from(suppaftp::async_native_tls::TlsConnector::new());
-            FtpConnection::Secure(
-                AsyncNativeTlsFtpStream::connect((host, port))
+            let stream = match proxy {
+                Some(proxy) => AsyncNativeTlsFtpStream::connect_with_stream(
+                    connect_target(host, port, Some(proxy)).await?,
+                )
+                .await
+                .map_err(|error| ftp_error("connect", error))?,
+                None => AsyncNativeTlsFtpStream::connect((host, port))
                     .await
-                    .map_err(|error| ftp_error("connect", error))?
+                    .map_err(|error| ftp_error("connect", error))?,
+            };
+            let stream = add_proxy_data_stream(stream, proxy);
+            FtpConnection::Secure(
+                stream
                     .into_secure(connector, host)
                     .await
                     .map_err(|error| ftp_error("start explicit TLS", error))?,
             )
         } else {
-            FtpConnection::Plain(
-                AsyncFtpStream::connect((host, port))
+            let stream = match proxy {
+                Some(proxy) => AsyncFtpStream::connect_with_stream(
+                    connect_target(host, port, Some(proxy)).await?,
+                )
+                .await
+                .map_err(|error| ftp_error("connect", error))?,
+                None => AsyncFtpStream::connect((host, port))
                     .await
                     .map_err(|error| ftp_error("connect", error))?,
-            )
+            };
+            let stream = add_proxy_data_stream(stream, proxy);
+            FtpConnection::Plain(stream)
         };
         connection.login(username, password).await?;
         connection.transfer_type(FileType::Binary).await?;
@@ -239,6 +284,7 @@ pub struct FtpFileSystem {
     password: String,
     root: String,
     explicit_tls: bool,
+    proxy: Option<ProxyConfig>,
     connection: Mutex<Option<FtpConnection>>,
 }
 
@@ -281,6 +327,7 @@ impl FtpFileSystem {
                 ));
             }
         };
+        let proxy = system_proxy(config)?;
         Ok(Self {
             host: config.host.clone(),
             port: config.port,
@@ -288,6 +335,7 @@ impl FtpFileSystem {
             password,
             root: normalize_root(&config.remote_path),
             explicit_tls: config.ftp_tls,
+            proxy,
             connection: Mutex::new(None),
         })
     }
@@ -302,6 +350,7 @@ impl FtpFileSystem {
                     &self.username,
                     &self.password,
                     self.explicit_tls,
+                    self.proxy.as_ref(),
                 )
                 .await?,
             );

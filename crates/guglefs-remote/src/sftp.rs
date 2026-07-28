@@ -19,6 +19,8 @@ use tokio::{
     sync::Mutex,
 };
 
+use crate::proxy::{connect_target, proxy_for_target, system_proxy, ProxyConfig};
+
 const SSH_TIMEOUT: Duration = Duration::from_secs(30);
 
 enum SftpAuth {
@@ -75,6 +77,7 @@ pub struct SftpFileSystem {
     auth: SftpAuth,
     root: String,
     host_key_fingerprint: String,
+    proxy: Option<ProxyConfig>,
     connection: Mutex<Option<SftpConnection>>,
 }
 
@@ -152,6 +155,7 @@ impl SftpFileSystem {
                 ));
             }
         };
+        let proxy = system_proxy(config)?;
         Ok(Self {
             host: config.host.clone(),
             port: config.port,
@@ -159,6 +163,7 @@ impl SftpFileSystem {
             auth,
             root: normalize_root(&config.remote_path),
             host_key_fingerprint,
+            proxy,
             connection: Mutex::new(None),
         })
     }
@@ -168,7 +173,8 @@ impl SftpFileSystem {
         let verifier = HostKeyVerifier {
             expected: self.host_key_fingerprint.clone(),
         };
-        let mut ssh = client::connect(config, (self.host.as_str(), self.port), verifier)
+        let stream = connect_target(&self.host, self.port, self.proxy.as_ref()).await?;
+        let mut ssh = client::connect_stream(config, stream, verifier)
             .await
             .map_err(|error| {
                 EngineError::Remote(format!(
@@ -441,12 +447,18 @@ impl RemoteFileSystem for SftpFileSystem {
     }
 }
 
-pub async fn inspect_host_key(host: &str, port: u16) -> EngineResult<String> {
+pub async fn inspect_host_key(
+    host: &str,
+    port: u16,
+    ignore_system_proxy: bool,
+) -> EngineResult<String> {
     let fingerprint = Arc::new(StdMutex::new(None));
     let capture = HostKeyCapture {
         fingerprint: fingerprint.clone(),
     };
-    let ssh = client::connect(Arc::new(ssh_config()), (host, port), capture)
+    let proxy = proxy_for_target(Protocol::Sftp, host, port, ignore_system_proxy)?;
+    let stream = connect_target(host, port, proxy.as_ref()).await?;
+    let ssh = client::connect_stream(Arc::new(ssh_config()), stream, capture)
         .await
         .map_err(|error| EngineError::Remote(format!("inspect SSH host key: {error}")))?;
     let _ = ssh

@@ -1,4 +1,5 @@
 mod ftp;
+mod proxy;
 mod sftp;
 mod webdav;
 

@@ -4,7 +4,7 @@ use guglefs_core::{
 };
 use guglefs_remote::{inspect_host_key, FtpFileSystem, SftpFileSystem, WebDavFileSystem};
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{path::BaseDirectory, AppHandle, Manager, State};
 
 use crate::{
     security::{AuthStatus, SecurityManager, TotpSetup},
@@ -19,7 +19,12 @@ pub struct PlatformInfo {
     os: &'static str,
     default_mount_point: String,
     secure_store: &'static str,
+    macfuse_required: bool,
+    macfuse_installed: bool,
+    macfuse_installer_bundled: bool,
 }
+
+const MACFUSE_INSTALLER_NAME: &str = "macfuse-5.3.3.dmg";
 
 #[tauri::command]
 pub fn get_platform_info(app: AppHandle) -> CommandResult<PlatformInfo> {
@@ -33,11 +38,60 @@ pub fn get_platform_info(app: AppHandle) -> CommandResult<PlatformInfo> {
             .to_string_lossy()
             .into_owned()
     };
+    let macfuse_installer_bundled = if cfg!(target_os = "macos") {
+        bundled_macfuse_installer(&app).is_ok()
+    } else {
+        false
+    };
     Ok(PlatformInfo {
         os: std::env::consts::OS,
         default_mount_point,
         secure_store: crate::security::secure_store_name(),
+        macfuse_required: cfg!(target_os = "macos"),
+        macfuse_installed: macfuse_is_installed(),
+        macfuse_installer_bundled,
     })
+}
+
+#[tauri::command]
+pub fn open_macfuse_installer(app: AppHandle) -> CommandResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let installer = bundled_macfuse_installer(&app)?;
+        std::process::Command::new("open")
+            .arg(installer)
+            .spawn()
+            .map_err(|error| format!("打开 macFUSE 安装器失败: {error}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("macFUSE 安装器仅适用于 macOS".into())
+    }
+}
+
+fn bundled_macfuse_installer(app: &AppHandle) -> CommandResult<std::path::PathBuf> {
+    let path = app
+        .path()
+        .resolve(MACFUSE_INSTALLER_NAME, BaseDirectory::Resource)
+        .map_err(|error| format!("定位内置 macFUSE 安装器失败: {error}"))?;
+    if !path.is_file() {
+        return Err(format!("内置 macFUSE 安装器不存在: {}", path.display()));
+    }
+    Ok(path)
+}
+
+fn macfuse_is_installed() -> bool {
+    if !cfg!(target_os = "macos") {
+        return true;
+    }
+    [
+        "/Library/Filesystems/macfuse.fs",
+        "/Library/Frameworks/macFUSE.framework",
+    ]
+    .iter()
+    .any(|path| std::path::Path::new(path).exists())
 }
 
 #[derive(Debug, Serialize)]
@@ -166,10 +220,11 @@ pub async fn inspect_sftp_host_key(
     state: State<'_, AppState>,
     host: String,
     port: u16,
+    ignore_system_proxy: bool,
 ) -> CommandResult<String> {
     state.security.require_unlocked()?;
     validate_host_and_port(&host, port)?;
-    inspect_host_key(host.trim(), port)
+    inspect_host_key(host.trim(), port, ignore_system_proxy)
         .await
         .map_err(|error| error.to_string())
 }
