@@ -1,8 +1,8 @@
 use std::{collections::HashSet, path::PathBuf};
 
 use guglefs_core::{
-    AuthMethod, ConfigDocument, ConnectionSecrets, EngineError, MappingConfig, MappingManager,
-    MappingRuntime, MappingState, MountDriver, Protocol, RemoteFileSystem,
+    AuthMethod, ConfigDocument, ConnectionSecrets, EngineError, EntryKind, MappingConfig,
+    MappingManager, MappingRuntime, MappingState, MountDriver, Protocol, RemoteFileSystem,
 };
 use guglefs_remote::{inspect_host_key, FtpFileSystem, SftpFileSystem, WebDavFileSystem};
 use serde::Serialize;
@@ -106,6 +106,25 @@ pub struct ImportMappingsResult {
     imported: usize,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteDirectory {
+    path: String,
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteBrowserListing {
+    path: String,
+    directories: Vec<RemoteDirectory>,
+}
+
+pub struct RemoteBrowserSession {
+    root: String,
+    remote: Box<dyn RemoteFileSystem>,
+}
+
 #[tauri::command]
 pub fn get_auth_status(state: State<'_, AppState>) -> CommandResult<AuthStatus> {
     state.security.status()
@@ -170,6 +189,16 @@ pub async fn lock_app(state: State<'_, AppState>) -> CommandResult<AuthStatus> {
             failures.len(),
             failures.join("; ")
         ));
+    }
+    let browser_sessions: Vec<_> = state
+        .remote_browsers
+        .lock()
+        .await
+        .drain()
+        .map(|(_, session)| session)
+        .collect();
+    for session in browser_sessions {
+        let _ = session.remote.disconnect().await;
     }
     state.security.lock()
 }
@@ -358,25 +387,183 @@ pub async fn test_remote_connection(
         private_key,
         normalized_secret(totp_code),
     )?;
-    let remote: Box<dyn RemoteFileSystem> = match config.protocol {
-        Protocol::Ftp => Box::new(
-            FtpFileSystem::from_config(&config, secrets.credential)
-                .map_err(|error| error.to_string())?,
-        ),
-        Protocol::Webdav => Box::new(
-            WebDavFileSystem::from_config(&config, secrets.credential)
-                .map_err(|error| error.to_string())?,
-        ),
-        Protocol::Sftp => Box::new(
-            SftpFileSystem::from_config(&config, secrets).map_err(|error| error.to_string())?,
-        ),
-    };
+    let remote = remote_file_system(&config, secrets)?;
     remote.connect().await.map_err(|error| error.to_string())?;
     remote
         .metadata("/")
         .await
         .map(|_| ())
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn open_remote_browser(
+    state: State<'_, AppState>,
+    mut config: MappingConfig,
+    password: Option<String>,
+    private_key: Option<String>,
+    totp_code: Option<String>,
+    session_id: String,
+) -> CommandResult<RemoteBrowserListing> {
+    state.security.require_unlocked()?;
+    validate_remote_browser_session_id(&session_id)?;
+    let root = normalize_remote_browser_path(&config.remote_path)?;
+    config.remote_path = root.clone();
+    config.validate().map_err(|error| error.to_string())?;
+    let secrets = resolve_secrets(
+        &state,
+        &config,
+        normalized_secret(password),
+        normalized_secret(private_key),
+        normalized_secret(totp_code),
+    )?;
+    let remote = remote_file_system(&config, secrets)?;
+    remote.connect().await.map_err(|error| error.to_string())?;
+    let directories = remote_directories(remote.as_ref(), &root, "/").await?;
+
+    let previous = state.remote_browsers.lock().await.remove(&session_id);
+    if let Some(previous) = previous {
+        let _ = previous.remote.disconnect().await;
+    }
+    state.remote_browsers.lock().await.insert(
+        session_id,
+        RemoteBrowserSession {
+            root: root.clone(),
+            remote,
+        },
+    );
+    Ok(RemoteBrowserListing {
+        path: root,
+        directories,
+    })
+}
+
+#[tauri::command]
+pub async fn list_remote_directories(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> CommandResult<RemoteBrowserListing> {
+    state.security.require_unlocked()?;
+    validate_remote_browser_session_id(&session_id)?;
+    let path = normalize_remote_browser_path(&path)?;
+    let sessions = state.remote_browsers.lock().await;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| "远程目录浏览会话已过期，请重新打开".to_string())?;
+    let relative = browser_path_relative_to_root(&session.root, &path)?;
+    let directories = remote_directories(session.remote.as_ref(), &session.root, &relative).await?;
+    Ok(RemoteBrowserListing { path, directories })
+}
+
+#[tauri::command]
+pub async fn close_remote_browser(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> CommandResult<()> {
+    validate_remote_browser_session_id(&session_id)?;
+    let session = state.remote_browsers.lock().await.remove(&session_id);
+    if let Some(session) = session {
+        let _ = session.remote.disconnect().await;
+    }
+    Ok(())
+}
+
+async fn remote_directories(
+    remote: &dyn RemoteFileSystem,
+    root: &str,
+    relative_path: &str,
+) -> CommandResult<Vec<RemoteDirectory>> {
+    let mut directories: Vec<_> = remote
+        .read_dir(relative_path)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|entry| entry.metadata.kind == EntryKind::Directory)
+        .map(|entry| RemoteDirectory {
+            path: absolute_browser_path(root, &entry.path),
+            name: entry.name,
+        })
+        .collect();
+    directories.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(directories)
+}
+
+fn remote_file_system(
+    config: &MappingConfig,
+    secrets: ConnectionSecrets,
+) -> CommandResult<Box<dyn RemoteFileSystem>> {
+    match config.protocol {
+        Protocol::Ftp => Ok(Box::new(
+            FtpFileSystem::from_config(config, secrets.credential)
+                .map_err(|error| error.to_string())?,
+        )),
+        Protocol::Webdav => Ok(Box::new(
+            WebDavFileSystem::from_config(config, secrets.credential)
+                .map_err(|error| error.to_string())?,
+        )),
+        Protocol::Sftp => Ok(Box::new(
+            SftpFileSystem::from_config(config, secrets).map_err(|error| error.to_string())?,
+        )),
+    }
+}
+
+fn normalize_remote_browser_path(path: &str) -> CommandResult<String> {
+    let path = path.trim();
+    if !path.starts_with('/') || path.contains('\\') {
+        return Err("远程目录必须是以 / 开头的绝对路径".into());
+    }
+    let mut segments = Vec::new();
+    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+        if matches!(segment, "." | "..") {
+            return Err("远程目录不能包含 . 或 .. 路径段".into());
+        }
+        segments.push(segment);
+    }
+    if segments.is_empty() {
+        Ok("/".into())
+    } else {
+        Ok(format!("/{}", segments.join("/")))
+    }
+}
+
+fn validate_remote_browser_session_id(session_id: &str) -> CommandResult<()> {
+    if !(8..=128).contains(&session_id.len())
+        || !session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err("远程目录浏览会话 ID 无效".into());
+    }
+    Ok(())
+}
+
+fn absolute_browser_path(root: &str, relative: &str) -> String {
+    if root == "/" {
+        relative.to_string()
+    } else if relative == "/" {
+        root.to_string()
+    } else {
+        format!("{}{}", root.trim_end_matches('/'), relative)
+    }
+}
+
+fn browser_path_relative_to_root(root: &str, path: &str) -> CommandResult<String> {
+    if path == root {
+        return Ok("/".into());
+    }
+    if root == "/" {
+        return Ok(path.to_string());
+    }
+    let prefix = format!("{}/", root.trim_end_matches('/'));
+    path.strip_prefix(&prefix)
+        .map(|relative| format!("/{relative}"))
+        .ok_or_else(|| "不能浏览初始远程目录之外的路径".into())
 }
 
 #[tauri::command]
@@ -843,5 +1030,33 @@ mod tests {
     fn startup_restore_skips_mfa_mappings() {
         assert!(!should_restore_startup_mapping(&sftp_runtime(true), true));
         assert!(should_restore_startup_mapping(&sftp_runtime(false), true));
+    }
+
+    #[test]
+    fn remote_browser_normalizes_absolute_paths() {
+        assert_eq!(normalize_remote_browser_path("/").unwrap(), "/");
+        assert_eq!(
+            normalize_remote_browser_path(" /团队/文档/ ").unwrap(),
+            "/团队/文档"
+        );
+    }
+
+    #[test]
+    fn remote_browser_rejects_parent_and_windows_paths() {
+        assert!(normalize_remote_browser_path("/data/../secret").is_err());
+        assert!(normalize_remote_browser_path("C:\\data").is_err());
+    }
+
+    #[test]
+    fn remote_browser_keeps_navigation_inside_its_initial_root() {
+        assert_eq!(
+            absolute_browser_path("/dav/user", "/docs"),
+            "/dav/user/docs"
+        );
+        assert_eq!(
+            browser_path_relative_to_root("/dav/user", "/dav/user/docs").unwrap(),
+            "/docs"
+        );
+        assert!(browser_path_relative_to_root("/dav/user", "/dav/other").is_err());
     }
 }

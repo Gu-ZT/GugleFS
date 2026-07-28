@@ -63,6 +63,16 @@ export interface ImportMappingsResult {
   imported: number;
 }
 
+export interface RemoteDirectory {
+  path: string;
+  name: string;
+}
+
+export interface RemoteBrowserListing {
+  path: string;
+  directories: RemoteDirectory[];
+}
+
 export function hasPersistedAuthentication(config: MappingConfig): boolean {
   switch (config.auth.type) {
     case "password":

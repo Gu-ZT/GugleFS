@@ -122,6 +122,8 @@ SFTP 支持密码认证，以及 OpenSSH/PEM 私钥认证。私钥文件不限�
 
 SFTP 服务器需要 MFA 时，可在映射中勾选“需要 MFA”，并在测试连接或挂载时手动输入当前 6 位 TOTP 验证码。验证码仅用于本次请求，不会保存到配置或系统凭据库；此类映射不支持自动挂载。空闲 SSH 传输会定时发送协议层 keepalive；只要已认证的 SSH 传输仍然存活，SFTP session 关闭后会静默重建，不需要再次输入验证码。如果 SSH 传输本身已经断开，则必须使用新的验证码手动重新挂载。非 MFA 连接仍会自动重连，并对可安全重试的操作重试一次。
 
+保存映射前可以在表单中浏览远程目录。目录浏览复用表单内当前凭据、系统代理设置、SFTP 主机密钥验证和临时 MFA 验证码；选择目录后只将绝对路径写回映射，不会持久化本次临时认证信息。
+
 ### 系统代理
 
 每个映射默认读取系统代理，也可以勾选“忽略系统代理”强制直连。Linux 和 macOS 读取协议对应的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`SFTP_PROXY`、`ALL_PROXY` 及小写变量，并遵守 `NO_PROXY`。Windows 读取当前用户注册表 `Internet Settings` 下的 `ProxyEnable`、`ProxyServer` 和 `ProxyOverride`。WebDAV 使用 HTTP(S) 或 SOCKS5 代理；SFTP、FTP 和 FTPS 通过 HTTP CONNECT 或 SOCKS5 建立隧道，FTP 的控制连接和被动数据连接都会使用同一代理。

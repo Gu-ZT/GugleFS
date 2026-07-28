@@ -10,6 +10,7 @@ GugleFS 的重要变更记录在此。Release 描述会读取与应用版本匹�
 - 增加双语 Release 描述生成，并附带平台、架构、格式和文件下载表格。
 - 增加仓库威胁模型、安全不变量以及贡献/发布说明。
 - 修复 macOS FUSE-T CI 链接，并增加直接链接 `libfuse-t` 的本地兼容 pkg-config shim。
+- 增加经过认证的远程目录浏览器，用于选择 FTP、FTPS、SFTP 和 WebDAV 映射根目录。
 
 ## [0.7.0] - 2026-07-29
 

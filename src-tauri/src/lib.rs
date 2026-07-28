@@ -2,7 +2,7 @@ mod commands;
 mod mount_state;
 mod security;
 
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use guglefs_core::MappingManager;
 use guglefs_mount::SystemMountDriver;
@@ -20,6 +20,7 @@ pub struct AppState {
     pub mount_driver: SystemMountDriver,
     pub mount_state: MountStateStore,
     pub mount_operations: tokio::sync::Mutex<()>,
+    pub remote_browsers: tokio::sync::Mutex<HashMap<String, commands::RemoteBrowserSession>>,
     pub security: SecurityManager,
 }
 
@@ -65,6 +66,7 @@ pub fn run() {
                 mount_driver: SystemMountDriver::default(),
                 mount_state,
                 mount_operations: tokio::sync::Mutex::new(()),
+                remote_browsers: tokio::sync::Mutex::new(HashMap::new()),
                 security: SecurityManager::default(),
             });
 
@@ -118,6 +120,9 @@ pub fn run() {
             commands::delete_mapping,
             commands::inspect_sftp_host_key,
             commands::test_remote_connection,
+            commands::open_remote_browser,
+            commands::list_remote_directories,
+            commands::close_remote_browser,
             commands::detect_sftp_mfa_requirement,
             commands::mount_mapping,
             commands::restore_startup_mappings,

@@ -123,6 +123,8 @@ For an SFTP server that requires MFA, enable `Requires MFA` on the mapping and e
 
 WebDAV requires HTTPS and keeps redirects on the original origin.
 
+The mapping form can browse remote directories before saving. It uses the current form credentials, system proxy setting, SFTP host-key verification, and transient MFA code; selecting a directory writes its absolute path back to the mapping without persisting any temporary secret.
+
 ## System proxies
 
 Mappings use the system proxy by default. Enable `Ignore system proxy` on a mapping to force direct connections.

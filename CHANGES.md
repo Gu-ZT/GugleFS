@@ -10,6 +10,7 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 - Added bilingual Release notes generation with a platform, architecture, format, and file download table.
 - Added a repository threat model, security invariants, and contributor/release instructions.
 - Fixed macOS FUSE-T CI linking and added a local compatibility pkg-config shim for `libfuse-t`.
+- Added an authenticated remote directory browser for choosing FTP, FTPS, SFTP, and WebDAV mapping roots.
 
 ## [0.7.0] - 2026-07-29
 

@@ -3,7 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { computed, reactive, ref, watch } from "vue";
 import { store } from "../store";
-import type { AuthMethod, MappingConfig, MappingRuntime, Protocol } from "../types";
+import type {
+  AuthMethod,
+  MappingConfig,
+  MappingRuntime,
+  Protocol,
+  RemoteBrowserListing,
+  RemoteDirectory,
+} from "../types";
 
 const DEFAULT_PORTS: Record<Protocol, number> = { ftp: 21, sftp: 22, webdav: 443 };
 
@@ -41,6 +48,12 @@ let trustedHostKeyFingerprint: string | null = null;
 const notice = ref<{ message: string; kind: "error" | "success" } | null>(null);
 const testing = ref(false);
 const saving = ref(false);
+const remoteBrowserOpen = ref(false);
+const remoteBrowserBusy = ref(false);
+const remoteBrowserRoot = ref("/");
+const remoteBrowserPath = ref("/");
+const remoteDirectories = ref<RemoteDirectory[]>([]);
+let remoteBrowserSessionId = crypto.randomUUID();
 const mountPointInput = ref<HTMLInputElement | null>(null);
 
 const mountPointError = computed(() => {
@@ -223,7 +236,86 @@ async function testConnection(): Promise<void> {
   }
 }
 
+function normalizedRemotePath(path: string): string {
+  const segments = path.trim().split("/").filter(Boolean);
+  return segments.length === 0 ? "/" : `/${segments.join("/")}`;
+}
+
+function parentRemotePath(path: string): string {
+  const segments = normalizedRemotePath(path).split("/").filter(Boolean);
+  segments.pop();
+  return segments.length === 0 ? "/" : `/${segments.join("/")}`;
+}
+
+function applyRemoteBrowserListing(listing: RemoteBrowserListing): void {
+  remoteBrowserPath.value = listing.path;
+  remoteDirectories.value = listing.directories;
+  remoteBrowserOpen.value = true;
+}
+
+async function openRemoteBrowser(): Promise<void> {
+  if (!formEl.value?.reportValidity()) return;
+  remoteBrowserBusy.value = true;
+  notice.value = null;
+  try {
+    const config = readMappingConfig();
+    const totpCode = totpActive.value ? draft.sftpTotpCode.trim() || null : null;
+    await verifySftpHostKey(config);
+    if (await probeMfaRequirement(config)) {
+      throw new Error(`${MFA_DETECTED_MESSAGE}后重新浏览`);
+    }
+    if (config.sftpTotpRequired && !totpCode) {
+      throw new Error("浏览 MFA SFTP 目录时请输入当前 6 位 TOTP 验证码");
+    }
+    const listing = await invoke<RemoteBrowserListing>("open_remote_browser", {
+      config,
+      password: draft.password || null,
+      privateKey: draft.privateKey.trim() || null,
+      totpCode,
+      sessionId: remoteBrowserSessionId,
+    });
+    remoteBrowserRoot.value = listing.path;
+    applyRemoteBrowserListing(listing);
+  } catch (error) {
+    notice.value = { message: String(error), kind: "error" };
+  } finally {
+    remoteBrowserBusy.value = false;
+  }
+}
+
+async function loadRemoteDirectories(path: string): Promise<void> {
+  remoteBrowserBusy.value = true;
+  notice.value = null;
+  try {
+    const listing = await invoke<RemoteBrowserListing>("list_remote_directories", {
+      sessionId: remoteBrowserSessionId,
+      path: normalizedRemotePath(path),
+    });
+    applyRemoteBrowserListing(listing);
+  } catch (error) {
+    notice.value = { message: String(error), kind: "error" };
+  } finally {
+    remoteBrowserBusy.value = false;
+  }
+}
+
+async function closeRemoteBrowser(): Promise<void> {
+  remoteBrowserOpen.value = false;
+  remoteDirectories.value = [];
+  try {
+    await invoke("close_remote_browser", { sessionId: remoteBrowserSessionId });
+  } catch {
+    // 会话也会在应用锁定或退出时清理，不阻塞关闭表单。
+  }
+}
+
+function selectRemotePath(): void {
+  draft.remotePath = remoteBrowserPath.value;
+  void closeRemoteBrowser();
+}
+
 async function open(runtime?: MappingRuntime): Promise<void> {
+  remoteBrowserSessionId = crypto.randomUUID();
   editing.value = runtime ?? null;
   if (!runtime) {
     await store.refreshOccupiedLetters();
@@ -263,6 +355,7 @@ function close(): void {
 }
 
 function onDialogClose(): void {
+  void closeRemoteBrowser();
   editing.value = null;
   editingCredentialId.value = null;
   editingAuthType.value = null;
@@ -271,6 +364,9 @@ function onDialogClose(): void {
   draft.password = "";
   draft.privateKey = "";
   draft.sftpTotpCode = "";
+  remoteBrowserOpen.value = false;
+  remoteBrowserBusy.value = false;
+  remoteDirectories.value = [];
   notice.value = null;
 }
 
@@ -374,7 +470,17 @@ defineExpose({ open });
         </label>
         <label>
           <span>远程路径</span>
-          <input v-model="draft.remotePath" required />
+          <div class="input-action">
+            <input v-model="draft.remotePath" required />
+            <button
+              class="secondary"
+              type="button"
+              :disabled="remoteBrowserBusy"
+              @click="openRemoteBrowser"
+            >
+              浏览
+            </button>
+          </div>
         </label>
         <label>
           <span>本地挂载点</span>
@@ -398,6 +504,58 @@ defineExpose({ open });
           <input v-model="draft.ignoreSystemProxy" type="checkbox" />
           <span>忽略系统代理</span>
         </label>
+        <section
+          v-if="remoteBrowserOpen"
+          class="remote-browser full-width"
+          aria-label="远程目录选择器"
+        >
+          <header class="remote-browser-header">
+            <button
+              class="icon-button"
+              type="button"
+              title="上一级"
+              aria-label="上一级"
+              :disabled="remoteBrowserPath === remoteBrowserRoot || remoteBrowserBusy"
+              @click="loadRemoteDirectories(parentRemotePath(remoteBrowserPath))"
+            >
+              ↑
+            </button>
+            <code>{{ remoteBrowserPath }}</code>
+            <button
+              class="icon-button"
+              type="button"
+              title="关闭目录选择器"
+              aria-label="关闭目录选择器"
+              @click="closeRemoteBrowser"
+            >
+              ×
+            </button>
+          </header>
+          <div class="remote-browser-list" :aria-busy="remoteBrowserBusy">
+            <button
+              v-for="directory in remoteDirectories"
+              :key="directory.path"
+              class="remote-directory"
+              type="button"
+              :disabled="remoteBrowserBusy"
+              @click="loadRemoteDirectories(directory.path)"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2 5.5A1.5 1.5 0 0 1 3.5 4h3l1.5 2h4.5A1.5 1.5 0 0 1 14 7.5v4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-6Z" />
+              </svg>
+              <span>{{ directory.name }}</span>
+              <span aria-hidden="true">›</span>
+            </button>
+            <p v-if="remoteDirectories.length === 0" class="remote-browser-empty">
+              此目录没有子目录
+            </p>
+          </div>
+          <footer class="remote-browser-footer">
+            <button class="primary compact" type="button" @click="selectRemotePath">
+              选择当前目录
+            </button>
+          </footer>
+        </section>
       </div>
 
       <div v-if="notice" class="notice dialog-notice" :data-kind="notice.kind" role="status">

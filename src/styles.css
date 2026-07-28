@@ -958,6 +958,77 @@ input:disabled {
   margin: 0 26px 16px;
 }
 
+.remote-browser {
+  overflow: hidden;
+  background: var(--abyss);
+  border: 1px solid var(--line-bright);
+  border-radius: 8px;
+}
+
+.remote-browser-header {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
+  gap: 8px;
+  align-items: center;
+  min-height: 44px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.remote-browser-header code {
+  overflow: hidden;
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-browser-list {
+  display: grid;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.remote-directory {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 12px;
+  gap: 9px;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 12px;
+  color: var(--ink-dim);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.remote-directory span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-directory:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--panel-raised);
+}
+
+.remote-browser-empty {
+  padding: 22px 12px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  text-align: center;
+}
+
+.remote-browser-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+}
+
 /* ---------- Dialogs ---------- */
 
 .app-dialog {
