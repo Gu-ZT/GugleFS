@@ -182,11 +182,9 @@ impl FtpConnection {
 
     async fn metadata(&mut self, path: &str) -> EngineResult<FileMetadata> {
         if let Ok(line) = self.mlst(path).await {
-            return ListParser::parse_mlst(&line)
-                .map(file_metadata)
-                .map_err(|error| {
-                    EngineError::Remote(format!("parse FTP MLST for {path}: {error}"))
-                });
+            return parse_mlst_metadata(&line).map_err(|error| {
+                EngineError::Remote(format!("parse FTP MLST for {path}: {error}"))
+            });
         }
         let (parent, name) = split_parent(path);
         self.list_entries(parent)
@@ -610,6 +608,47 @@ fn file_metadata(file: File) -> FileMetadata {
     }
 }
 
+fn parse_mlst_metadata(line: &str) -> Result<FileMetadata, &'static str> {
+    let facts = line.trim_start();
+    let facts = facts
+        .find(|character: char| character.is_whitespace())
+        .map(|end| &facts[..end])
+        .unwrap_or(facts);
+    let mut kind = None;
+    let mut size = 0;
+
+    for fact in facts.split(';').filter(|fact| !fact.is_empty()) {
+        let Some((key, value)) = fact.split_once('=') else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case("type") {
+            kind = Some(
+                if ["dir", "cdir", "pdir"]
+                    .iter()
+                    .any(|candidate| value.eq_ignore_ascii_case(candidate))
+                {
+                    EntryKind::Directory
+                } else if value.eq_ignore_ascii_case("file")
+                    || value.eq_ignore_ascii_case("link")
+                    || value.to_ascii_lowercase().starts_with("os.unix=slink")
+                {
+                    EntryKind::File
+                } else {
+                    return Err("invalid type fact");
+                },
+            );
+        } else if key.eq_ignore_ascii_case("size") {
+            size = value.parse().map_err(|_| "invalid size fact")?;
+        }
+    }
+
+    Ok(FileMetadata {
+        kind: kind.ok_or("missing type fact")?,
+        size,
+        modified: None,
+    })
+}
+
 fn ftp_error(operation: &str, error: suppaftp::FtpError) -> EngineError {
     EngineError::Remote(format!("FTP {operation}: {error}"))
 }
@@ -639,6 +678,13 @@ mod tests {
 
         let directory = ListParser::parse_mlsd("modify=20240102030405;type=dir; docs").unwrap();
         assert_eq!(file_metadata(directory).kind, EntryKind::Directory);
+
+        let pure_ftpd = parse_mlst_metadata(
+            "type=file;size=12;modify=20240102030405;UNIX.mode=0644;UNIX.uid=1000; readme.txt",
+        )
+        .unwrap();
+        assert_eq!(pure_ftpd.kind, EntryKind::File);
+        assert_eq!(pure_ftpd.size, 12);
     }
 
     #[test]
