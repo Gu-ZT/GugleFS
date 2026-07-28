@@ -14,7 +14,7 @@ services:
       - -A
       - -Z
       - -H
-      - -4
+      - "-4"
       - -X
       - -x
     environment:

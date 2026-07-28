@@ -55,7 +55,7 @@
 - [x] WebDAV：限制跨域重定向时的认证头转发，防止凭据泄漏
 - [x] FTP/FTPS/SFTP/WebDAV：读取 Windows 注册表或 Unix 环境变量中的系统代理，并支持按映射忽略
 - [x] 每映射复用 FTP/SFTP 会话和 WebDAV HTTP 连接池，仅在瞬时故障后重建失效连接
-- [ ] 建立可注入的协议测试服务和集成测试（SFTP 已通过；Pure-FTPd 已修复列表兼容问题并启用重命名，等待完整流程同轮 CI 复验）
+- [ ] 建立可注入的协议测试服务和集成测试（SFTP 已通过；Pure-FTPd 已修复列表兼容问题，并通过显式字符串参数启用重命名，等待完整流程同轮 CI 复验）
 
 ## P1：系统挂载
 
@@ -101,7 +101,7 @@
 - [x] CI 覆盖 Linux、macOS 的格式检查、Clippy、测试和前端构建
 - [x] 增加 Windows `rustfmt`、Clippy、测试和前端静态检查门禁
 - [x] 将 checkout、Node 和 pnpm Actions 升级到 Node 24 运行时，消除 Node 20 弃用告警
-- [ ] 使用本地 FTP / SFTP 容器执行协议集成测试（SFTP 已通过；Pure-FTPd 已修复列表兼容问题并启用重命名，等待完整流程同轮 CI 复验）
+- [ ] 使用本地 FTP / SFTP 容器执行协议集成测试（SFTP 已通过；Pure-FTPd 已修复列表兼容问题，并通过显式字符串参数启用重命名，等待完整流程同轮 CI 复验）
 - [ ] 使用内存后端执行 WinFsp / FUSE 一致性测试
 - [ ] 压测大文件、海量小文件、并发读写和高延迟网络
 - [x] 建立未签名 Windows x64 NSIS 自动打包流程
