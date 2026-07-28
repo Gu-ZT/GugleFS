@@ -1,0 +1,10 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: fuse
+Description: FUSE-T compatibility metadata for fuser
+Version: 2.9.9
+Libs: -L${libdir} -lfuse-t
+Cflags: -I${includedir}/fuse -D_FILE_OFFSET_BITS=64

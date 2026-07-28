@@ -87,6 +87,7 @@ On macOS:
 ```bash
 brew install --cask fuse-t
 brew install pkgconf
+export PKG_CONFIG_PATH="$PWD/scripts/pkgconfig/fuse-t${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 ```
 
 Install dependencies and start the app:

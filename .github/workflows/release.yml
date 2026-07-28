@@ -38,6 +38,8 @@ jobs:
         run: |
           brew install pkgconf
           brew install --cask fuse-t
+          echo "PKG_CONFIG_PATH=$GITHUB_WORKSPACE/scripts/pkgconfig/fuse-t" >> "$GITHUB_ENV"
+          PKG_CONFIG_PATH="$GITHUB_WORKSPACE/scripts/pkgconfig/fuse-t" pkg-config --libs fuse
 
       - uses: pnpm/action-setup@v4
 
@@ -187,6 +189,8 @@ jobs:
         run: |
           brew install pkgconf
           brew install --cask fuse-t
+          echo "PKG_CONFIG_PATH=$GITHUB_WORKSPACE/scripts/pkgconfig/fuse-t" >> "$GITHUB_ENV"
+          PKG_CONFIG_PATH="$GITHUB_WORKSPACE/scripts/pkgconfig/fuse-t" pkg-config --libs fuse
       - name: Set app version from release tag
         if: github.event_name == 'release'
         env:

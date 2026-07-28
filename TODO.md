@@ -62,7 +62,7 @@
 - [x] Windows：恢复空目录挂载点并清理失效的 WinFsp 目录 reparse point
 - [ ] Windows：处理大小写、Windows 文件名限制和文件属性
 - [x] Linux：接入 FUSE3，完成挂载、卸载和基础权限映射
-- [x] macOS：接入 FUSE-T 1.2.7，完成无内核扩展挂载和安全卸载
+- [x] macOS：接入 FUSE-T 1.2.7，完成无内核扩展挂载、安全卸载和通过 pkg-config shim 直接链接 `libfuse-t`
 - [ ] macOS：配置签名、公证证书并验证发布产物
 - [x] 应用安全退出时卸载所有由 GugleFS 创建的挂载点
 - [ ] 处理休眠、网络切换和系统关机
