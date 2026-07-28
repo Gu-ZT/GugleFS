@@ -1,23 +1,54 @@
 <div align="center">
 
-<img src="src-tauri/icons/icon.png" width="256" height="256" alt="GugleFS icon">
+<img src="src-tauri/icons/icon.png" width="128" height="128" alt="GugleFS icon">
 
 # GugleFS
 
-</div>
+**Mount remote FTP, SFTP, and WebDAV paths as local drives.**
 
 English | [简体中文](README.zh_CN.md)
 
-GugleFS is a cross-platform Tauri desktop client that mounts remote FTP, SFTP, and WebDAV paths as local drives or directories.
+</div>
 
-- Windows: WinFsp 2.1
-- Linux: FUSE3
-- macOS: macFUSE 5
-- Desktop UI: Tauri, Vue 3, TypeScript, and Vite
-- Filesystem engine: Rust
-- Package manager: pnpm
+GugleFS is a cross-platform Tauri desktop client that turns remote servers into local filesystems. Configure a mapping once, mount it, and the remote path behaves like any drive or directory on your machine — in every application, not just a file transfer window.
 
-Windows, Linux, and macOS share the same remote protocol adapters, system proxy support, secure credential storage, startup 2FA, tray behavior, mount recovery, metadata cache, and sequential read-ahead.
+- **Three protocols, one UI** — FTP/FTPS, SFTP (password, private key, MFA), and WebDAV over HTTPS
+- **Native mounts** — WinFsp 2.1 on Windows, FUSE3 on Linux, macFUSE 5 on macOS
+- **Locked at startup** — TOTP two-factor authentication gates the app; credentials live in the OS secure store
+- **Survives the network** — idle keepalives, silent reconnects, and mount recovery after restart
+- **Fast by default** — bounded metadata caches and 1 MiB sequential read-ahead, shared across platforms
+
+The desktop UI is built with Tauri, Vue 3, TypeScript, and Vite; the filesystem engine is Rust; packages are managed with pnpm.
+
+## Screenshots
+
+Unlock is protected by TOTP two-factor authentication:
+
+<p align="center">
+  <img src="docs/totp.png" width="640" alt="GugleFS 2FA unlock screen">
+</p>
+
+Mounted mappings show live status, endpoint, mount point, and credential state at a glance:
+
+<p align="center">
+  <img src="docs/main.png" width="720" alt="Mapping list with a mounted SFTP drive">
+</p>
+
+Adding a mapping adapts to the protocol — SFTP offers password, OpenSSH/PEM private-key, and MFA options, while WebDAV stays minimal. Every mapping can be tested before it is saved:
+
+<table>
+  <tr>
+    <td width="50%">
+        <img src="docs/add-sftp.png" alt="Add mapping dialog — SFTP">
+        <img src="docs/add-sftp2.png" width="640" alt="SFTP mapping options — MFA, auto-mount, proxy bypass, connection test">
+    </td>
+    <td width="50%"><img src="docs/add-webdav.png" alt="Add mapping dialog — WebDAV"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>SFTP with password, key, or MFA authentication</sub></td>
+    <td align="center"><sub>WebDAV over HTTPS</sub></td>
+  </tr>
+</table>
 
 ## Repository layout
 
@@ -29,6 +60,7 @@ GugleFS/
 |  |- guglefs-core/         # Models, state, VFS, and engine traits
 |  |- guglefs-remote/       # FTP, SFTP, and WebDAV adapters
 |  `- guglefs-mount/        # WinFsp and FUSE drivers
+|- docs/                    # README screenshots
 |- THIRD_PARTY_LICENSES/    # Redistributed dependency licenses
 |- Cargo.toml               # Rust workspace
 |- package.json             # pnpm scripts
@@ -125,3 +157,7 @@ Pushes to `main` run formatting, strict Clippy, Rust tests, and the production f
 - macOS ARM64 App and DMG, including the macFUSE installer and license
 
 macOS signing and notarization use the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` secrets. Signing is enabled only when the repository variable `APPLE_SIGNING_ENABLED=true`; otherwise the workflow produces unsigned artifacts. Windows and Linux signing credentials are not configured yet.
+
+## License
+
+GugleFS is licensed under [LGPL-3.0-only](LICENSE). The bundled macFUSE installer remains under its [own license](THIRD_PARTY_LICENSES/macFUSE-LICENSE.txt).

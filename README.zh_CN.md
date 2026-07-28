@@ -1,22 +1,54 @@
 <div align="center">
 
-<img src="src-tauri/icons/icon.png" width="256" height="256" alt="GugleFS icon">
+<img src="src-tauri/icons/icon.png" width="128" height="128" alt="GugleFS icon">
 
 # GugleFS
 
-</div>
+**把 FTP、SFTP 和 WebDAV 远程路径挂载为本地磁盘。**
 
 [English](README.md) | 简体中文
 
-GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端，目标是将 FTP、SFTP（SSH）和 WebDAV 远程路径映射为本地磁盘或挂载目录。
+</div>
 
-- Windows：WinFsp
-- Linux / macOS：FUSE
-- 配置界面：Tauri + Vue 3 + TypeScript + Vite
-- 文件系统引擎：Rust
-- 前端包管理器：pnpm
+GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置一次映射并挂载后，远程路径就像本机上的普通磁盘或目录一样，可以被任何应用直接使用，而不仅是文件传输窗口。
 
-> Windows、Linux 和 macOS 共用 FTP/显式 FTPS、SFTP、WebDAV、系统代理、系统凭据库、启动 2FA、托盘和挂载恢复逻辑。Windows 使用 WinFsp，Linux 使用 FUSE3，macOS 使用 macFUSE 5。
+- **三种协议，一个界面** —— FTP/FTPS、SFTP（密码、私钥、MFA）、WebDAV（HTTPS）
+- **原生挂载** —— Windows 使用 WinFsp 2.1，Linux 使用 FUSE3，macOS 使用 macFUSE 5
+- **启动即锁定** —— TOTP 双因素认证保护应用启动，凭据保存在系统安全凭据库
+- **经得起断网** —— 空闲 keepalive、静默重连、重启后恢复挂载
+- **默认就快** —— 有界元数据缓存与 1 MiB 顺序预读，三平台共用
+
+配置界面使用 Tauri + Vue 3 + TypeScript + Vite 构建，文件系统引擎为 Rust，前端包管理器为 pnpm。
+
+## 界面截图
+
+启动解锁由 TOTP 双因素认证保护：
+
+<p align="center">
+  <img src="docs/totp.png" width="640" alt="GugleFS 2FA 解锁界面">
+</p>
+
+映射列表一眼可见实时状态、端点、挂载点和凭据保存情况：
+
+<p align="center">
+  <img src="docs/main.png" width="720" alt="映射列表 —— 已挂载的 SFTP 磁盘">
+</p>
+
+添加映射的表单随协议适配——SFTP 提供密码、OpenSSH/PEM 私钥和 MFA 选项，WebDAV 则保持精简。每个映射保存前都可以先测试连接：
+
+<table>
+  <tr>
+    <td width="50%">
+        <img src="docs/add-sftp.png" alt="添加映射 —— SFTP">
+        <img src="docs/add-sftp2.png" width="640" alt="SFTP 映射选项 —— MFA、自动挂载、代理绕过、测试连接">
+    </td>
+    <td width="50%"><img src="docs/add-webdav.png" alt="添加映射 —— WebDAV"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>SFTP：密码、私钥或 MFA 认证</sub></td>
+    <td align="center"><sub>WebDAV（HTTPS）</sub></td>
+  </tr>
+</table>
 
 ## 目录结构
 
@@ -28,6 +60,8 @@ GugleFS/
 │  ├─ guglefs-core/         # 配置模型、状态和引擎抽象
 │  ├─ guglefs-remote/       # FTP / SFTP / WebDAV 适配器
 │  └─ guglefs-mount/        # WinFsp / FUSE 平台驱动
+├─ docs/                    # README 界面截图
+├─ THIRD_PARTY_LICENSES/    # 随包分发的依赖许可证
 ├─ Cargo.toml               # Rust workspace
 ├─ package.json             # pnpm 命令
 └─ TODO.md
@@ -46,7 +80,6 @@ Windows：
 - Visual Studio Build Tools 2022
 - `Desktop development with C++` 工作负载及 Windows 10/11 SDK
 - WebView2（现代 Windows 通常已经包含）
-
 - WinFsp 2.1 SDK
 
 Linux（Debian/Ubuntu）：
@@ -115,3 +148,7 @@ SFTP 服务器需要 MFA 时，可在映射中勾选“需要 MFA”，并在测
 推送到 `main` 后，GitHub Actions 会在 Windows、Ubuntu 和 macOS 上分别执行格式检查、Clippy、Rust 测试和前端生产构建，再创建 `<version>+build.<run_number>` 预发布。发布产物包括 Windows x64 NSIS、Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG；正式 GitHub Release 会采用 release tag 作为应用版本。
 
 Windows 安装包内置 WinFsp 运行时，macOS 包内置已校验的官方 macFUSE 安装器和许可证。macOS 工作流支持通过 `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD` 和 `APPLE_TEAM_ID` secrets 完成签名与公证；确认凭据有效后还需设置仓库变量 `APPLE_SIGNING_ENABLED=true` 才会启用签名，否则生成未签名产物。Linux 和 Windows 代码签名仍需配置对应签名密钥。
+
+## 许可证
+
+GugleFS 采用 [LGPL-3.0-only](LICENSE) 许可证。随包分发的 macFUSE 安装器遵循其[自有许可条款](THIRD_PARTY_LICENSES/macFUSE-LICENSE.txt)。
