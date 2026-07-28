@@ -4,6 +4,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock, RwLockReadGuard, RwLockWriteGuard,
     },
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -13,6 +14,12 @@ use crate::{
     DirectoryEntry, EngineError, EngineResult, EntryKind, FileMetadata, FileTimes, FsErrorCode,
     RemoteFileSystem,
 };
+
+const METADATA_CACHE_TTL: Duration = Duration::from_secs(3);
+const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(1);
+const DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(2);
+const READ_AHEAD_SIZE: u64 = 1024 * 1024;
+const MAX_CACHE_ENTRIES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileHandle(u64);
@@ -109,8 +116,11 @@ pub trait VirtualFileSystem: Send + Sync {
 pub struct RemoteVfs<R: RemoteFileSystem + ?Sized> {
     remote: Arc<R>,
     next_handle: AtomicU64,
+    content_generation: AtomicU64,
     files: RwLock<HashMap<FileHandle, Arc<OpenFile>>>,
     directories: RwLock<HashMap<DirectoryHandle, Arc<OpenDirectory>>>,
+    metadata_cache: RwLock<HashMap<String, CacheEntry<CachedMetadata>>>,
+    directory_cache: RwLock<HashMap<String, CacheEntry<Vec<DirectoryEntry>>>>,
 }
 
 impl<R: RemoteFileSystem + ?Sized> RemoteVfs<R> {
@@ -118,8 +128,11 @@ impl<R: RemoteFileSystem + ?Sized> RemoteVfs<R> {
         Self {
             remote,
             next_handle: AtomicU64::new(1),
+            content_generation: AtomicU64::new(0),
             files: RwLock::new(HashMap::new()),
             directories: RwLock::new(HashMap::new()),
+            metadata_cache: RwLock::new(HashMap::new()),
+            directory_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -156,6 +169,96 @@ impl<R: RemoteFileSystem + ?Sized> RemoteVfs<R> {
             .cloned()
             .ok_or_else(|| invalid_handle(handle.id()))
     }
+
+    async fn metadata(&self, path: &str) -> EngineResult<FileMetadata> {
+        if let Some(metadata) = self.cached_metadata(path)? {
+            return metadata.into_result(path);
+        }
+
+        match self.remote.metadata(path).await {
+            Ok(metadata) => {
+                self.cache_metadata(path, CachedMetadata::Found(metadata.clone()))?;
+                Ok(metadata)
+            }
+            Err(error) if error.code() == FsErrorCode::NotFound => {
+                self.cache_metadata(path, CachedMetadata::NotFound)?;
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn cached_metadata(&self, path: &str) -> EngineResult<Option<CachedMetadata>> {
+        get_cached(&self.metadata_cache, path)
+    }
+
+    fn cache_metadata(&self, path: &str, metadata: CachedMetadata) -> EngineResult<()> {
+        let ttl = match metadata {
+            CachedMetadata::Found(_) => METADATA_CACHE_TTL,
+            CachedMetadata::NotFound => NEGATIVE_CACHE_TTL,
+        };
+        insert_cached(&self.metadata_cache, path.into(), metadata, ttl)
+    }
+
+    fn invalidate_path(&self, path: &str) -> EngineResult<()> {
+        write_lock(&self.metadata_cache)?.remove(path);
+        write_lock(&self.directory_cache)?.remove(path);
+        self.invalidate_parent(path)
+    }
+
+    fn invalidate_parent(&self, path: &str) -> EngineResult<()> {
+        if let Some(parent) = parent_path(path) {
+            write_lock(&self.directory_cache)?.remove(parent);
+        }
+        Ok(())
+    }
+
+    fn invalidate_subtree(&self, path: &str) -> EngineResult<()> {
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        write_lock(&self.metadata_cache)?
+            .retain(|cached_path, _| cached_path != path && !cached_path.starts_with(&prefix));
+        write_lock(&self.directory_cache)?
+            .retain(|cached_path, _| cached_path != path && !cached_path.starts_with(&prefix));
+        self.invalidate_parent(path)
+    }
+
+    async fn directory_entries(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
+        if let Some(entries) = get_cached(&self.directory_cache, path)? {
+            return Ok(entries);
+        }
+
+        let entries = self.remote.read_dir(path).await?;
+        for entry in &entries {
+            self.cache_metadata(&entry.path, CachedMetadata::Found(entry.metadata.clone()))?;
+        }
+        insert_cached(
+            &self.directory_cache,
+            path.into(),
+            entries.clone(),
+            DIRECTORY_CACHE_TTL,
+        )?;
+        Ok(entries)
+    }
+}
+
+#[derive(Clone)]
+enum CachedMetadata {
+    Found(FileMetadata),
+    NotFound,
+}
+
+impl CachedMetadata {
+    fn into_result(self, path: &str) -> EngineResult<FileMetadata> {
+        match self {
+            Self::Found(metadata) => Ok(metadata),
+            Self::NotFound => Err(EngineError::filesystem(FsErrorCode::NotFound, path)),
+        }
+    }
+}
+
+struct CacheEntry<T> {
+    value: T,
+    expires_at: Instant,
 }
 
 #[async_trait]
@@ -170,7 +273,7 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
         } else {
             format!("{parent}/{name}")
         };
-        let metadata = self.remote.metadata(&path).await?;
+        let metadata = self.metadata(&path).await?;
         Ok(DirectoryEntry {
             path,
             name: name.into(),
@@ -179,27 +282,39 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
     }
 
     async fn getattr(&self, path: &str) -> EngineResult<FileMetadata> {
-        self.remote.metadata(&normalize_path(path)?).await
+        self.metadata(&normalize_path(path)?).await
     }
 
     async fn open(&self, path: &str, options: OpenOptions) -> EngineResult<FileHandle> {
         options.validate()?;
         let path = normalize_path(path)?;
-        match self.remote.metadata(&path).await {
+        let mut metadata = match self.metadata(&path).await {
             Ok(metadata) if metadata.kind == EntryKind::Directory => {
                 return Err(EngineError::filesystem(
                     FsErrorCode::IsDirectory,
                     format!("cannot open directory as a file: {path}"),
                 ));
             }
-            Ok(_) => {}
+            Ok(metadata) => metadata,
             Err(error) if options.create && error.code() == FsErrorCode::NotFound => {
                 self.remote.create_file(&path).await?;
+                let metadata = FileMetadata {
+                    kind: EntryKind::File,
+                    size: 0,
+                    modified: None,
+                };
+                self.cache_metadata(&path, CachedMetadata::Found(metadata.clone()))?;
+                self.invalidate_parent(&path)?;
+                metadata
             }
             Err(error) => return Err(error),
-        }
+        };
         if options.truncate {
             self.remote.truncate(&path, 0).await?;
+            self.content_generation.fetch_add(1, Ordering::AcqRel);
+            metadata.size = 0;
+            self.cache_metadata(&path, CachedMetadata::Found(metadata))?;
+            self.invalidate_parent(&path)?;
         }
 
         let handle = FileHandle(self.allocate_handle()?);
@@ -208,7 +323,7 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
             Arc::new(OpenFile {
                 path,
                 options,
-                operation: Mutex::new(()),
+                operation: Mutex::new(FileOperation::default()),
                 dirty: AtomicBool::new(false),
                 released: AtomicBool::new(false),
             }),
@@ -218,7 +333,7 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
 
     async fn open_dir(&self, path: &str) -> EngineResult<DirectoryHandle> {
         let path = normalize_path(path)?;
-        let metadata = self.remote.metadata(&path).await?;
+        let metadata = self.metadata(&path).await?;
         if metadata.kind != EntryKind::Directory {
             return Err(EngineError::filesystem(
                 FsErrorCode::NotDirectory,
@@ -242,32 +357,71 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
         let directory = self.directory(handle)?;
         let _operation = directory.operation.lock().await;
         ensure_open(directory.released.load(Ordering::Acquire), handle.id())?;
-        self.remote.read_dir(&directory.path).await
+        self.directory_entries(&directory.path).await
     }
 
     async fn read(&self, handle: FileHandle, offset: u64, length: u64) -> EngineResult<Vec<u8>> {
         let file = self.file(handle)?;
-        let _operation = file.operation.lock().await;
+        let mut operation = file.operation.lock().await;
         ensure_open(file.released.load(Ordering::Acquire), handle.id())?;
         if !file.options.read {
             return Err(permission_denied("file handle is not open for reading"));
         }
-        self.remote.read_range(&file.path, offset, length).await
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        let content_generation = self.content_generation.load(Ordering::Acquire);
+        if let Some(data) = operation
+            .read_cache
+            .as_ref()
+            .filter(|cache| cache.content_generation == content_generation)
+            .and_then(|cache| cache.read(offset, length))
+        {
+            return Ok(data);
+        }
+
+        let fetch_length = length.max(READ_AHEAD_SIZE);
+        let data = self
+            .remote
+            .read_range(&file.path, offset, fetch_length)
+            .await?;
+        let cache = ReadCache {
+            offset,
+            reached_end: data.len() < usize::try_from(fetch_length).unwrap_or(usize::MAX),
+            data,
+            content_generation,
+        };
+        let result = cache.read(offset, length).unwrap_or_default();
+        operation.read_cache = Some(cache);
+        Ok(result)
     }
 
     async fn write(&self, handle: FileHandle, offset: u64, data: Vec<u8>) -> EngineResult<u64> {
         let file = self.file(handle)?;
-        let _operation = file.operation.lock().await;
+        let mut operation = file.operation.lock().await;
         ensure_open(file.released.load(Ordering::Acquire), handle.id())?;
         if !file.options.write {
             return Err(permission_denied("file handle is not open for writing"));
         }
-        let offset = if file.options.append {
-            self.remote.metadata(&file.path).await?.size
+        let cached_metadata = if file.options.append {
+            let metadata = self.remote.metadata(&file.path).await?;
+            let offset = metadata.size;
+            self.cache_metadata(&file.path, CachedMetadata::Found(metadata.clone()))?;
+            (offset, Some(CachedMetadata::Found(metadata)))
         } else {
-            offset
+            (offset, self.cached_metadata(&file.path)?)
         };
+        let (offset, cached_metadata) = cached_metadata;
         let written = self.remote.write(&file.path, offset, data).await?;
+        self.content_generation.fetch_add(1, Ordering::AcqRel);
+        operation.read_cache = None;
+        if let Some(CachedMetadata::Found(mut metadata)) = cached_metadata {
+            metadata.size = metadata.size.max(offset.saturating_add(written));
+            self.cache_metadata(&file.path, CachedMetadata::Found(metadata))?;
+            self.invalidate_parent(&file.path)?;
+        } else {
+            self.invalidate_path(&file.path)?;
+        }
         file.dirty.store(true, Ordering::Release);
         Ok(written)
     }
@@ -299,7 +453,17 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
     }
 
     async fn create_dir(&self, path: &str) -> EngineResult<()> {
-        self.remote.create_dir(&normalize_path(path)?).await
+        let path = normalize_path(path)?;
+        self.remote.create_dir(&path).await?;
+        self.cache_metadata(
+            &path,
+            CachedMetadata::Found(FileMetadata {
+                kind: EntryKind::Directory,
+                size: 0,
+                modified: None,
+            }),
+        )?;
+        self.invalidate_parent(&path)
     }
 
     async fn remove(&self, path: &str, kind: EntryKind) -> EngineResult<()> {
@@ -307,7 +471,7 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
         if path == "/" {
             return Err(invalid_argument("cannot remove the VFS root"));
         }
-        let metadata = self.remote.metadata(&path).await?;
+        let metadata = self.metadata(&path).await?;
         if metadata.kind != kind {
             let code = if kind == EntryKind::Directory {
                 FsErrorCode::NotDirectory
@@ -321,30 +485,76 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
         }
         self.remote
             .remove(&path, kind == EntryKind::Directory)
-            .await
+            .await?;
+        self.content_generation.fetch_add(1, Ordering::AcqRel);
+        self.invalidate_subtree(&path)
     }
 
     async fn rename(&self, from: &str, to: &str) -> EngineResult<()> {
-        self.remote
-            .rename(&normalize_path(from)?, &normalize_path(to)?)
-            .await
+        let from = normalize_path(from)?;
+        let to = normalize_path(to)?;
+        self.remote.rename(&from, &to).await?;
+        self.content_generation.fetch_add(1, Ordering::AcqRel);
+        self.invalidate_subtree(&from)?;
+        self.invalidate_subtree(&to)
     }
 
     async fn truncate(&self, path: &str, size: u64) -> EngineResult<()> {
-        self.remote.truncate(&normalize_path(path)?, size).await
+        let path = normalize_path(path)?;
+        let mut metadata = self.metadata(&path).await?;
+        self.remote.truncate(&path, size).await?;
+        self.content_generation.fetch_add(1, Ordering::AcqRel);
+        metadata.size = size;
+        self.cache_metadata(&path, CachedMetadata::Found(metadata))?;
+        self.invalidate_parent(&path)
     }
 
     async fn set_times(&self, path: &str, times: FileTimes) -> EngineResult<()> {
-        self.remote.set_times(&normalize_path(path)?, times).await
+        let path = normalize_path(path)?;
+        let mut metadata = self.metadata(&path).await?;
+        self.remote.set_times(&path, times.clone()).await?;
+        if let Some(modified) = times.modified {
+            metadata.modified = Some(modified);
+        }
+        self.cache_metadata(&path, CachedMetadata::Found(metadata))?;
+        self.invalidate_parent(&path)
     }
 }
 
 struct OpenFile {
     path: String,
     options: OpenOptions,
-    operation: Mutex<()>,
+    operation: Mutex<FileOperation>,
     dirty: AtomicBool,
     released: AtomicBool,
+}
+
+#[derive(Default)]
+struct FileOperation {
+    read_cache: Option<ReadCache>,
+}
+
+struct ReadCache {
+    offset: u64,
+    data: Vec<u8>,
+    reached_end: bool,
+    content_generation: u64,
+}
+
+impl ReadCache {
+    fn read(&self, offset: u64, length: u64) -> Option<Vec<u8>> {
+        let start = usize::try_from(offset.checked_sub(self.offset)?).ok()?;
+        if start > self.data.len() {
+            return None;
+        }
+        let requested = usize::try_from(length).ok()?;
+        let available = self.data.len().saturating_sub(start);
+        if requested > available && !self.reached_end {
+            return None;
+        }
+        let count = requested.min(available);
+        Some(self.data[start..start + count].to_vec())
+    }
 }
 
 struct OpenDirectory {
@@ -378,6 +588,54 @@ fn normalize_path(path: &str) -> EngineResult<String> {
     } else {
         Ok(format!("/{}", segments.join("/")))
     }
+}
+
+fn parent_path(path: &str) -> Option<&str> {
+    if path == "/" {
+        return None;
+    }
+    let (parent, _) = path.rsplit_once('/')?;
+    Some(if parent.is_empty() { "/" } else { parent })
+}
+
+fn get_cached<T: Clone>(
+    cache: &RwLock<HashMap<String, CacheEntry<T>>>,
+    path: &str,
+) -> EngineResult<Option<T>> {
+    let now = Instant::now();
+    let mut cache = write_lock(cache)?;
+    match cache.get(path) {
+        Some(entry) if entry.expires_at > now => Ok(Some(entry.value.clone())),
+        Some(_) => {
+            cache.remove(path);
+            Ok(None)
+        }
+        None => Ok(None),
+    }
+}
+
+fn insert_cached<T>(
+    cache: &RwLock<HashMap<String, CacheEntry<T>>>,
+    path: String,
+    value: T,
+    ttl: Duration,
+) -> EngineResult<()> {
+    let now = Instant::now();
+    let mut cache = write_lock(cache)?;
+    if cache.len() >= MAX_CACHE_ENTRIES {
+        cache.retain(|_, entry| entry.expires_at > now);
+        if cache.len() >= MAX_CACHE_ENTRIES {
+            cache.clear();
+        }
+    }
+    cache.insert(
+        path,
+        CacheEntry {
+            value,
+            expires_at: now + ttl,
+        },
+    );
+    Ok(())
 }
 
 fn read_lock<T>(lock: &RwLock<T>) -> EngineResult<RwLockReadGuard<'_, T>> {
@@ -433,6 +691,9 @@ mod tests {
     struct MemoryRemote {
         nodes: RwLock<BTreeMap<String, Node>>,
         flushes: AtomicUsize,
+        metadata_reads: AtomicUsize,
+        directory_reads: AtomicUsize,
+        range_reads: AtomicUsize,
     }
 
     impl MemoryRemote {
@@ -456,7 +717,7 @@ mod tests {
             );
             Self {
                 nodes: RwLock::new(nodes),
-                flushes: AtomicUsize::new(0),
+                ..Self::default()
             }
         }
 
@@ -488,6 +749,7 @@ mod tests {
         }
 
         async fn metadata(&self, path: &str) -> EngineResult<FileMetadata> {
+            self.metadata_reads.fetch_add(1, Ordering::Relaxed);
             self.read_nodes()
                 .get(path)
                 .map(Self::node_metadata)
@@ -495,6 +757,7 @@ mod tests {
         }
 
         async fn read_dir(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
+            self.directory_reads.fetch_add(1, Ordering::Relaxed);
             let prefix = if path == "/" {
                 "/".to_string()
             } else {
@@ -518,6 +781,7 @@ mod tests {
         }
 
         async fn read_range(&self, path: &str, offset: u64, length: u64) -> EngineResult<Vec<u8>> {
+            self.range_reads.fetch_add(1, Ordering::Relaxed);
             let node = self
                 .read_nodes()
                 .get(path)
@@ -651,6 +915,77 @@ mod tests {
         assert_eq!(vfs.open_file_count().unwrap(), 0);
         assert!(
             matches!(vfs.read(handle, 0, 1).await, Err(error) if error.code() == FsErrorCode::InvalidHandle)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn caches_metadata_directory_entries_and_missing_paths() {
+        let remote = Arc::new(MemoryRemote::with_sample_file());
+        let vfs = RemoteVfs::new(remote.clone());
+
+        assert_eq!(vfs.getattr("/hello.txt").await.unwrap().size, 5);
+        assert_eq!(vfs.getattr("/hello.txt").await.unwrap().size, 5);
+        assert_eq!(remote.metadata_reads.load(Ordering::Relaxed), 1);
+
+        let directory = vfs.open_dir("/").await.unwrap();
+        assert_eq!(vfs.readdir(directory).await.unwrap().len(), 1);
+        assert_eq!(vfs.readdir(directory).await.unwrap().len(), 1);
+        assert_eq!(remote.directory_reads.load(Ordering::Relaxed), 1);
+
+        assert!(vfs.getattr("/missing").await.is_err());
+        assert!(vfs.getattr("/missing").await.is_err());
+        assert_eq!(remote.metadata_reads.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reads_sequential_ranges_from_one_readahead_request() {
+        let remote = Arc::new(MemoryRemote::with_sample_file());
+        let vfs = RemoteVfs::new(remote.clone());
+        let reader = vfs
+            .open("/hello.txt", OpenOptions::read_only())
+            .await
+            .unwrap();
+        let writer = vfs
+            .open("/hello.txt", OpenOptions::read_write())
+            .await
+            .unwrap();
+
+        assert_eq!(vfs.read(reader, 0, 2).await.unwrap(), b"he");
+        assert_eq!(vfs.read(reader, 2, 2).await.unwrap(), b"ll");
+        assert_eq!(vfs.read(reader, 4, 2).await.unwrap(), b"o");
+        assert_eq!(remote.range_reads.load(Ordering::Relaxed), 1);
+
+        vfs.write(writer, 0, b"H".to_vec()).await.unwrap();
+        assert_eq!(vfs.read(reader, 0, 2).await.unwrap(), b"He");
+        assert_eq!(remote.range_reads.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn append_uses_the_latest_remote_file_size() {
+        let remote = Arc::new(MemoryRemote::with_sample_file());
+        let vfs = RemoteVfs::new(remote.clone());
+
+        assert_eq!(vfs.getattr("/hello.txt").await.unwrap().size, 5);
+        remote.write("/hello.txt", 5, b"!".to_vec()).await.unwrap();
+
+        let handle = vfs
+            .open(
+                "/hello.txt",
+                OpenOptions {
+                    read: true,
+                    write: true,
+                    create: false,
+                    truncate: false,
+                    append: true,
+                },
+            )
+            .await
+            .unwrap();
+        vfs.write(handle, 0, b"?".to_vec()).await.unwrap();
+
+        assert_eq!(
+            remote.read_range("/hello.txt", 0, 7).await.unwrap(),
+            b"hello!?"
         );
     }
 
