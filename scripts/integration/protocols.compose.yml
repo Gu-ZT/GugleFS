@@ -1,6 +1,22 @@
 services:
   ftp:
     image: stilliard/pure-ftpd:hardened
+    command:
+      - /run.sh
+      - -l
+      - puredb:/etc/pure-ftpd/pureftpd.pdb
+      - -E
+      - -j
+      - -R
+      - -P
+      - 127.0.0.1
+      - -s
+      - -A
+      - -Z
+      - -H
+      - -4
+      - -X
+      - -x
     environment:
       PUBLICHOST: "127.0.0.1"
       FTP_USER_NAME: "guglefs"
