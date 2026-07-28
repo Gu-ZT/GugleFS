@@ -21,9 +21,9 @@ export const store = reactive({
     os: "windows",
     defaultMountPoint: "Z:",
     secureStore: "系统凭据库",
-    macfuseRequired: false,
-    macfuseInstalled: true,
-    macfuseInstallerBundled: false,
+    fuseTRequired: false,
+    fuseTInstalled: true,
+    fuseTInstallerBundled: false,
   } as PlatformInfo,
   mappings: [] as MappingRuntime[],
   notice: null as Notice | null,
@@ -191,9 +191,9 @@ export const store = reactive({
     }
   },
 
-  async installMacfuse(): Promise<void> {
-    await invoke("open_macfuse_installer");
-    this.setNotice("已打开 macFUSE 安装器", "success");
+  async installFuseT(): Promise<void> {
+    await invoke("open_fuse_t_installer");
+    this.setNotice("已打开 FUSE-T 安装器", "success");
   },
 });
 

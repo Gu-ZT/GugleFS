@@ -13,7 +13,7 @@
 GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置一次映射并挂载后，远程路径就像本机上的普通磁盘或目录一样，可以被任何应用直接使用，而不仅是文件传输窗口。
 
 - **三种协议，一个界面** —— FTP/FTPS、SFTP（密码、私钥、MFA）、WebDAV（HTTPS）
-- **原生挂载** —— Windows 使用 WinFsp 2.1，Linux 使用 FUSE3，macOS 使用 macFUSE 5
+- **原生挂载** —— Windows 使用 WinFsp 2.1，Linux 使用 FUSE3，macOS 使用 FUSE-T 1.2.7
 - **启动即锁定** —— TOTP 双因素认证保护应用启动，凭据保存在系统安全凭据库
 - **经得起断网** —— 空闲 keepalive、静默重连、重启后恢复挂载
 - **默认就快** —— 有界元数据缓存与 1 MiB 顺序预读，三平台共用
@@ -92,7 +92,7 @@ sudo apt install fuse3 libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
 macOS：
 
 ```bash
-brew install --cask macfuse
+brew install --cask fuse-t
 brew install pkgconf
 ```
 
@@ -111,9 +111,9 @@ pnpm check
 
 Windows NSIS 安装包内置并静默安装 [WinFsp 2.1](https://github.com/winfsp/winfsp/releases) 运行时，挂载点可以是 `Z:` 盘符或绝对目录。WinFsp 会自行创建目录挂载点；GugleFS 会暂时移除已有空目录并在正常卸载后恢复，非空目录会被拒绝。
 
-Linux 使用 FUSE3，挂载点是绝对目录；DEB 包声明 `fuse3` 和 `libsecret-1-0` 依赖。macOS App/DMG 内置官方 macFUSE 5.3.3 安装器，检测到运行时缺失时可从应用内打开。macFUSE 包含系统扩展，因此仍必须由用户以管理员权限安装，并在“隐私与安全性”中批准，GugleFS 不会自动或静默安装。不存在的 Unix 挂载目录会在首次挂载时创建，已有目录必须为空。
+Linux 使用 FUSE3，挂载点是绝对目录；DEB 包声明 `fuse3` 和 `libsecret-1-0` 依赖。macOS App/DMG 内置官方 FUSE-T 1.2.7 安装器，检测到运行时缺失时可从应用内打开。安装仍需管理员授权，但 FUSE-T 通过本机 NFS、SMB 或 FSKit 后端运行在用户空间，不需要内核或系统扩展；部分应用首次访问挂载点时需要在“隐私与安全性 -> 文件与文件夹”中允许“网络宗卷”。不存在的 Unix 挂载目录会在首次挂载时创建，已有目录必须为空。
 
-macFUSE 的二进制许可允许非商业软件再分发，但商业软件捆绑、自动下载或安装需要版权方书面许可。GugleFS 分发未经修改的官方 DMG，固定 SHA-256，并随包附带[完整许可条款](THIRD_PARTY_LICENSES/macFUSE-LICENSE.txt)。
+FUSE-T 二进制许可允许非商业用途再分发；商业使用或随商业软件捆绑需要从 FUSE-T 作者处取得商业许可。GugleFS 分发未经修改的官方 PKG，固定 SHA-256，并随包附带[FUSE-T 许可条款](THIRD_PARTY_LICENSES/FUSE-T-LICENSE.txt)和[第三方归属声明](THIRD_PARTY_LICENSES/FUSE-T-ATTRIBUTIONS.txt)。
 
 FTP 默认使用被动模式，支持标准 FTP 和显式 FTPS；不支持已弃用的隐式 FTPS。
 
@@ -147,8 +147,8 @@ SFTP 服务器需要 MFA 时，可在映射中勾选“需要 MFA”，并在测
 
 推送到 `main` 后，GitHub Actions 会在 Windows、Ubuntu 和 macOS 上分别执行格式检查、Clippy、Rust 测试和前端生产构建，再创建 `<version>+build.<run_number>` 预发布。发布产物包括 Windows x64 NSIS、Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG；正式 GitHub Release 会采用 release tag 作为应用版本。
 
-Windows 安装包内置 WinFsp 运行时，macOS 包内置已校验的官方 macFUSE 安装器和许可证。macOS 工作流支持通过 `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD` 和 `APPLE_TEAM_ID` secrets 完成签名与公证；确认凭据有效后还需设置仓库变量 `APPLE_SIGNING_ENABLED=true` 才会启用签名，否则生成未签名产物。Linux 和 Windows 代码签名仍需配置对应签名密钥。
+Windows 安装包内置 WinFsp 运行时，macOS 包内置已校验的官方 FUSE-T 安装器、许可证和第三方归属声明。macOS 工作流支持通过 `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD` 和 `APPLE_TEAM_ID` secrets 完成签名与公证；确认凭据有效后还需设置仓库变量 `APPLE_SIGNING_ENABLED=true` 才会启用签名，否则生成未签名产物。Linux 和 Windows 代码签名仍需配置对应签名密钥。
 
 ## 许可证
 
-GugleFS 采用 [LGPL-3.0-only](LICENSE) 许可证。随包分发的 macFUSE 安装器遵循其[自有许可条款](THIRD_PARTY_LICENSES/macFUSE-LICENSE.txt)。
+GugleFS 采用 [LGPL-3.0-only](LICENSE) 许可证。随包分发的 FUSE-T 安装器遵循其[自有许可条款](THIRD_PARTY_LICENSES/FUSE-T-LICENSE.txt)。

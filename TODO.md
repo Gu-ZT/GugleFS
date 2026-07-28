@@ -62,7 +62,7 @@
 - [x] Windows：恢复空目录挂载点并清理失效的 WinFsp 目录 reparse point
 - [ ] Windows：处理大小写、Windows 文件名限制和文件属性
 - [x] Linux：接入 FUSE3，完成挂载、卸载和基础权限映射
-- [x] macOS：接入 macFUSE 5，完成挂载和安全卸载
+- [x] macOS：接入 FUSE-T 1.2.7，完成无内核扩展挂载和安全卸载
 - [ ] macOS：配置签名、公证证书并验证发布产物
 - [x] 应用安全退出时卸载所有由 GugleFS 创建的挂载点
 - [ ] 处理休眠、网络切换和系统关机
@@ -99,7 +99,7 @@
 - [ ] 压测大文件、海量小文件、并发读写和高延迟网络
 - [x] 建立未签名 Windows x64 NSIS 自动打包流程
 - [x] 建立 Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG 打包流程
-- [x] macOS 包内置已校验的官方 macFUSE 安装器和完整再分发许可
+- [x] macOS 包内置已校验的官方 FUSE-T 安装器、许可和第三方归属声明
 - [ ] 配置 Windows/Linux 签名及 macOS 签名公证凭据
 - [ ] 编写威胁模型，审查凭据、路径穿越、符号链接与日志泄漏风险
 

@@ -11,11 +11,11 @@ import MountDialog from "./MountDialog.vue";
 const formDialog = ref<InstanceType<typeof MappingFormDialog> | null>(null);
 const mountDialog = ref<InstanceType<typeof MountDialog> | null>(null);
 const locking = ref(false);
-const installingMacfuse = ref(false);
+const installingFuseT = ref(false);
 
 const mappingCount = computed(() => `${store.mappings.length} 个配置`);
-const showMacfuseBanner = computed(
-  () => store.platformInfo.macfuseRequired && !store.platformInfo.macfuseInstalled,
+const showFuseTBanner = computed(
+  () => store.platformInfo.fuseTRequired && !store.platformInfo.fuseTInstalled,
 );
 
 onMounted(() => {
@@ -50,13 +50,13 @@ function lock(): void {
     });
 }
 
-function installMacfuse(): void {
-  installingMacfuse.value = true;
+function installFuseT(): void {
+  installingFuseT.value = true;
   store
-    .installMacfuse()
+    .installFuseT()
     .catch((error) => store.setNotice(String(error)))
     .finally(() => {
-      installingMacfuse.value = false;
+      installingFuseT.value = false;
     });
 }
 </script>
@@ -106,18 +106,18 @@ function installMacfuse(): void {
     </aside>
 
     <div class="main-panel">
-      <section v-if="showMacfuseBanner" class="runtime-banner" aria-live="polite">
+      <section v-if="showFuseTBanner" class="runtime-banner" aria-live="polite">
         <div class="runtime-banner-content">
           <div>
-            <strong>需要安装 macFUSE</strong>
-            <p>安装后请在 macOS“隐私与安全性”中批准系统扩展，再重新启动 GugleFS。</p>
+            <strong>需要安装 FUSE-T</strong>
+            <p>安装后请重新启动 GugleFS；部分应用首次访问时还需允许“网络宗卷”权限。</p>
           </div>
           <button
-            v-if="store.platformInfo.macfuseInstallerBundled"
+            v-if="store.platformInfo.fuseTInstallerBundled"
             class="secondary compact"
             type="button"
-            :disabled="installingMacfuse"
-            @click="installMacfuse"
+            :disabled="installingFuseT"
+            @click="installFuseT"
           >
             打开安装器
           </button>

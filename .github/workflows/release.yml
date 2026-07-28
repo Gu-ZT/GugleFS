@@ -33,9 +33,11 @@ jobs:
             libdbus-1-dev libssl-dev librsvg2-dev libwebkit2gtk-4.1-dev \
             libxdo-dev pkg-config wget
 
-      - name: Install macFUSE build runtime
+      - name: Install FUSE-T build runtime
         if: runner.os == 'macOS'
-        run: brew install --cask macfuse
+        run: |
+          brew install pkgconf
+          brew install --cask fuse-t
 
       - uses: pnpm/action-setup@v4
 
@@ -181,8 +183,10 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Install macFUSE build runtime
-        run: brew install --cask macfuse
+      - name: Install FUSE-T build runtime
+        run: |
+          brew install pkgconf
+          brew install --cask fuse-t
       - name: Set app version from release tag
         if: github.event_name == 'release'
         env:

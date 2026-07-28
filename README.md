@@ -13,7 +13,7 @@ English | [简体中文](README.zh_CN.md)
 GugleFS is a cross-platform Tauri desktop client that turns remote servers into local filesystems. Configure a mapping once, mount it, and the remote path behaves like any drive or directory on your machine — in every application, not just a file transfer window.
 
 - **Three protocols, one UI** — FTP/FTPS, SFTP (password, private key, MFA), and WebDAV over HTTPS
-- **Native mounts** — WinFsp 2.1 on Windows, FUSE3 on Linux, macFUSE 5 on macOS
+- **Native mounts** — WinFsp 2.1 on Windows, FUSE3 on Linux, FUSE-T 1.2.7 on macOS
 - **Locked at startup** — TOTP two-factor authentication gates the app; credentials live in the OS secure store
 - **Survives the network** — idle keepalives, silent reconnects, and mount recovery after restart
 - **Fast by default** — bounded metadata caches and 1 MiB sequential read-ahead, shared across platforms
@@ -85,7 +85,7 @@ sudo apt install fuse3 libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
 On macOS:
 
 ```bash
-brew install --cask macfuse
+brew install --cask fuse-t
 brew install pkgconf
 ```
 
@@ -108,9 +108,9 @@ The Windows NSIS package includes and silently installs the official [WinFsp 2.1
 
 Linux uses FUSE3 and absolute directory mount points. The DEB package declares `fuse3` and `libsecret-1-0` dependencies.
 
-The macOS App and DMG contain the unmodified official macFUSE 5.3.3 installer. When macFUSE is missing, GugleFS shows an action that opens the bundled installer. macOS still requires the user to authorize installation with administrator privileges and approve the system extension in Privacy & Security. GugleFS never installs or approves the extension automatically.
+The macOS App and DMG contain the unmodified official FUSE-T 1.2.7 installer. When FUSE-T is missing, GugleFS shows an action that opens the bundled installer. Installation still requires administrator authorization, but FUSE-T runs in user space over a local NFS, SMB, or FSKit backend and does not require a kernel/system extension. Some applications may need access to Network Volumes under Privacy & Security > Files and Folders before they can browse a mount.
 
-The macFUSE binary license permits redistribution with non-commercial software. Bundling it with commercial software, including automated download or installation, requires prior written permission from the copyright holder. GugleFS pins the official installer SHA-256 and includes the [complete macFUSE license](THIRD_PARTY_LICENSES/macFUSE-LICENSE.txt) in the repository and application bundle.
+The FUSE-T binary license permits redistribution for non-commercial use. Commercial use or bundling with commercial software requires a commercial license from the FUSE-T authors. GugleFS pins the official installer SHA-256 and includes the [FUSE-T license](THIRD_PARTY_LICENSES/FUSE-T-LICENSE.txt) and [third-party attributions](THIRD_PARTY_LICENSES/FUSE-T-ATTRIBUTIONS.txt) in the repository and application bundle.
 
 ## Remote protocols
 
@@ -154,10 +154,10 @@ Pushes to `main` run formatting, strict Clippy, Rust tests, and the production f
 
 - Windows x64 NSIS, including WinFsp
 - Linux x64 DEB and AppImage
-- macOS ARM64 App and DMG, including the macFUSE installer and license
+- macOS ARM64 App and DMG, including the FUSE-T installer, license, and attributions
 
 macOS signing and notarization use the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` secrets. Signing is enabled only when the repository variable `APPLE_SIGNING_ENABLED=true`; otherwise the workflow produces unsigned artifacts. Windows and Linux signing credentials are not configured yet.
 
 ## License
 
-GugleFS is licensed under [LGPL-3.0-only](LICENSE). The bundled macFUSE installer remains under its [own license](THIRD_PARTY_LICENSES/macFUSE-LICENSE.txt).
+GugleFS is licensed under [LGPL-3.0-only](LICENSE). The bundled FUSE-T installer remains under its [own license](THIRD_PARTY_LICENSES/FUSE-T-LICENSE.txt).

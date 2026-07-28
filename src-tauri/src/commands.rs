@@ -19,12 +19,12 @@ pub struct PlatformInfo {
     os: &'static str,
     default_mount_point: String,
     secure_store: &'static str,
-    macfuse_required: bool,
-    macfuse_installed: bool,
-    macfuse_installer_bundled: bool,
+    fuse_t_required: bool,
+    fuse_t_installed: bool,
+    fuse_t_installer_bundled: bool,
 }
 
-const MACFUSE_INSTALLER_NAME: &str = "macfuse-5.3.3.dmg";
+const FUSE_T_INSTALLER_NAME: &str = "fuse-t-macos-installer-1.2.7.pkg";
 
 #[tauri::command]
 pub fn get_platform_info(app: AppHandle) -> CommandResult<PlatformInfo> {
@@ -38,8 +38,8 @@ pub fn get_platform_info(app: AppHandle) -> CommandResult<PlatformInfo> {
             .to_string_lossy()
             .into_owned()
     };
-    let macfuse_installer_bundled = if cfg!(target_os = "macos") {
-        bundled_macfuse_installer(&app).is_ok()
+    let fuse_t_installer_bundled = if cfg!(target_os = "macos") {
+        bundled_fuse_t_installer(&app).is_ok()
     } else {
         false
     };
@@ -47,51 +47,47 @@ pub fn get_platform_info(app: AppHandle) -> CommandResult<PlatformInfo> {
         os: std::env::consts::OS,
         default_mount_point,
         secure_store: crate::security::secure_store_name(),
-        macfuse_required: cfg!(target_os = "macos"),
-        macfuse_installed: macfuse_is_installed(),
-        macfuse_installer_bundled,
+        fuse_t_required: cfg!(target_os = "macos"),
+        fuse_t_installed: fuse_t_is_installed(),
+        fuse_t_installer_bundled,
     })
 }
 
 #[tauri::command]
-pub fn open_macfuse_installer(app: AppHandle) -> CommandResult<()> {
+pub fn open_fuse_t_installer(app: AppHandle) -> CommandResult<()> {
     #[cfg(target_os = "macos")]
     {
-        let installer = bundled_macfuse_installer(&app)?;
+        let installer = bundled_fuse_t_installer(&app)?;
         std::process::Command::new("open")
             .arg(installer)
             .spawn()
-            .map_err(|error| format!("打开 macFUSE 安装器失败: {error}"))?;
+            .map_err(|error| format!("打开 FUSE-T 安装器失败: {error}"))?;
         Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
-        Err("macFUSE 安装器仅适用于 macOS".into())
+        Err("FUSE-T 安装器仅适用于 macOS".into())
     }
 }
 
-fn bundled_macfuse_installer(app: &AppHandle) -> CommandResult<std::path::PathBuf> {
+fn bundled_fuse_t_installer(app: &AppHandle) -> CommandResult<std::path::PathBuf> {
     let path = app
         .path()
-        .resolve(MACFUSE_INSTALLER_NAME, BaseDirectory::Resource)
-        .map_err(|error| format!("定位内置 macFUSE 安装器失败: {error}"))?;
+        .resolve(FUSE_T_INSTALLER_NAME, BaseDirectory::Resource)
+        .map_err(|error| format!("定位内置 FUSE-T 安装器失败: {error}"))?;
     if !path.is_file() {
-        return Err(format!("内置 macFUSE 安装器不存在: {}", path.display()));
+        return Err(format!("内置 FUSE-T 安装器不存在: {}", path.display()));
     }
     Ok(path)
 }
 
-fn macfuse_is_installed() -> bool {
+fn fuse_t_is_installed() -> bool {
     if !cfg!(target_os = "macos") {
         return true;
     }
-    [
-        "/Library/Filesystems/macfuse.fs",
-        "/Library/Frameworks/macFUSE.framework",
-    ]
-    .iter()
-    .any(|path| std::path::Path::new(path).exists())
+    std::path::Path::new("/usr/local/lib/libfuse-t.dylib").is_file()
+        && std::path::Path::new("/Library/Application Support/fuse-t").is_dir()
 }
 
 #[derive(Debug, Serialize)]
@@ -724,6 +720,24 @@ fn rollback_mapping(state: &AppState, existing: Option<MappingRuntime>, mapping_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_info_serializes_fuse_t_frontend_keys() {
+        let value = serde_json::to_value(PlatformInfo {
+            os: "macos",
+            default_mount_point: "/Users/test/GugleFS".into(),
+            secure_store: "macOS Keychain",
+            fuse_t_required: true,
+            fuse_t_installed: false,
+            fuse_t_installer_bundled: true,
+        })
+        .expect("platform info should serialize");
+
+        assert_eq!(value["fuseTRequired"], true);
+        assert_eq!(value["fuseTInstalled"], false);
+        assert_eq!(value["fuseTInstallerBundled"], true);
+        assert_eq!(value.as_object().map(serde_json::Map::len), Some(6));
+    }
 
     fn sftp_runtime(mfa_required: bool) -> MappingRuntime {
         MappingRuntime {

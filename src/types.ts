@@ -53,9 +53,9 @@ export interface PlatformInfo {
   os: "windows" | "macos" | "linux";
   defaultMountPoint: string;
   secureStore: string;
-  macfuseRequired: boolean;
-  macfuseInstalled: boolean;
-  macfuseInstallerBundled: boolean;
+  fuseTRequired: boolean;
+  fuseTInstalled: boolean;
+  fuseTInstallerBundled: boolean;
 }
 
 export function hasPersistedAuthentication(config: MappingConfig): boolean {

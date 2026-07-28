@@ -2,8 +2,9 @@
   "bundle": {
     "targets": ["app", "dmg"],
     "resources": {
-      "resources/macos/macfuse-5.3.3.dmg": "macfuse-5.3.3.dmg",
-      "../THIRD_PARTY_LICENSES/macFUSE-LICENSE.txt": "licenses/macFUSE-LICENSE.txt"
+      "resources/macos/fuse-t-macos-installer-1.2.7.pkg": "fuse-t-macos-installer-1.2.7.pkg",
+      "../THIRD_PARTY_LICENSES/FUSE-T-LICENSE.txt": "licenses/FUSE-T-LICENSE.txt",
+      "../THIRD_PARTY_LICENSES/FUSE-T-ATTRIBUTIONS.txt": "licenses/FUSE-T-ATTRIBUTIONS.txt"
     },
     "macOS": {
       "minimumSystemVersion": "11.0"
