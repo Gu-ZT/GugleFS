@@ -78,28 +78,30 @@ if (!app) {
 
 app.innerHTML = `
   <div id="auth-screen" class="auth-screen">
-    <header class="auth-brand">
-      <p class="eyebrow">SECURE ACCESS</p>
-      <h1>GugleFS</h1>
-    </header>
-    <main class="auth-main">
+    <div class="auth-content">
+      <div class="auth-logo">
+        <span class="logo-mark">G</span>
+        <h1>GugleFS</h1>
+      </div>
+      <p class="auth-tagline">把远程服务器挂载为本地磁盘</p>
       <section class="auth-panel" aria-labelledby="auth-title">
         <div class="auth-heading">
-          <p class="eyebrow">TWO-FACTOR AUTHENTICATION</p>
+          <p class="eyebrow">Two-Factor Authentication</p>
           <h2 id="auth-title">验证身份</h2>
         </div>
         <div id="auth-notice" class="notice auth-notice" role="status" hidden></div>
         <form id="unlock-form" class="auth-form" hidden>
           <label>
             <span>验证码</span>
-            <input id="unlock-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required />
+            <input id="unlock-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000" required />
           </label>
-          <button id="unlock-submit" class="primary" type="submit">解锁</button>
+          <button id="unlock-submit" class="primary btn-block" type="submit">解锁</button>
         </form>
         <div id="setup-view" hidden>
           <div class="setup-layout">
             <img id="totp-qr" class="totp-qr" alt="GugleFS 2FA 二维码" />
             <div class="setup-fields">
+              <p class="setup-hint">使用 authenticator 应用扫描二维码，然后输入生成的 6 位验证码完成绑定。</p>
               <label>
                 <span>密钥</span>
                 <div class="input-action">
@@ -110,59 +112,91 @@ app.innerHTML = `
               <form id="setup-form" class="auth-form setup-form">
                 <label>
                   <span>验证码</span>
-                  <input id="setup-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required />
+                  <input id="setup-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000" required />
                 </label>
-                <button id="setup-submit" class="primary" type="submit">启用 2FA</button>
+                <button id="setup-submit" class="primary btn-block" type="submit">启用 2FA</button>
               </form>
             </div>
           </div>
         </div>
       </section>
-    </main>
+      <p class="auth-footnote">凭据经系统安全存储加密 · 双因素认证保护</p>
+    </div>
   </div>
 
   <div id="workspace" hidden>
-    <header class="app-header">
-      <div>
-        <p class="eyebrow">REMOTE FILESYSTEM</p>
-        <h1>GugleFS</h1>
-      </div>
-      <div class="header-actions">
-        <button id="lock-app" class="header-button" type="button">锁定</button>
-        <button id="new-mapping" class="primary" type="button">添加映射</button>
-      </div>
-    </header>
-    <section id="mount-runtime-banner" class="runtime-banner" aria-live="polite" hidden>
-      <div class="runtime-banner-content">
-        <div>
-          <strong>需要安装 macFUSE</strong>
-          <p>安装后请在 macOS“隐私与安全性”中批准系统扩展，再重新启动 GugleFS。</p>
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <span class="logo-mark">G</span>
+        <div class="brand-text">
+          <h1>GugleFS</h1>
+          <p>远程文件系统</p>
         </div>
-        <button id="install-macfuse" class="secondary" type="button">打开 macFUSE 安装器</button>
       </div>
-    </section>
-    <main>
-      <section class="mapping-section" aria-labelledby="mapping-title">
-        <div class="section-heading">
+      <nav class="sidebar-nav">
+        <span class="nav-item active">
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 5.5A1.5 1.5 0 0 1 3.5 4h3l1.5 2h4.5A1.5 1.5 0 0 1 14 7.5v4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-6Z"/>
+          </svg>
+          磁盘映射
+        </span>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="lock-app" class="sidebar-lock" type="button">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+            <rect x="3" y="7" width="10" height="6" rx="1.5"/>
+            <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>
+          </svg>
+          锁定
+        </button>
+      </div>
+    </aside>
+    <div class="main-panel">
+      <section id="mount-runtime-banner" class="runtime-banner" aria-live="polite" hidden>
+        <div class="runtime-banner-content">
           <div>
-            <h2 id="mapping-title">磁盘映射</h2>
-            <p id="mapping-count">0 个配置</p>
+            <strong>需要安装 macFUSE</strong>
+            <p>安装后请在 macOS“隐私与安全性”中批准系统扩展，再重新启动 GugleFS。</p>
           </div>
-          <button id="refresh" class="icon-button" type="button" title="刷新" aria-label="刷新">↻</button>
-        </div>
-        <div id="notice" class="notice" role="status" hidden></div>
-        <div id="mapping-list" class="mapping-list"></div>
-        <div id="empty-state" class="empty-state">
-          <p>还没有远程磁盘配置</p>
-          <button id="empty-add" class="secondary" type="button">创建第一个映射</button>
+          <button id="install-macfuse" class="secondary compact" type="button">打开安装器</button>
         </div>
       </section>
-    </main>
+      <header class="main-header">
+        <div>
+          <h2>磁盘映射</h2>
+          <p id="mapping-count">0 个配置</p>
+        </div>
+        <div class="main-header-actions">
+          <button id="refresh" class="icon-button" type="button" title="刷新" aria-label="刷新">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3"/>
+            </svg>
+          </button>
+          <button id="new-mapping" class="primary" type="button">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <path d="M8 3v10M3 8h10"/>
+            </svg>
+            添加映射
+          </button>
+        </div>
+      </header>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <div id="mapping-list" class="mapping-grid"></div>
+      <div id="empty-state" class="empty-state">
+        <svg viewBox="0 0 48 48" width="56" height="56" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 34a8 8 0 1 1 1.4-15.88A10 10 0 0 1 34.6 21 7 7 0 0 1 34 35H14Z" opacity="0.9"/>
+          <path d="M24 28v10M20 34l4-4 4 4"/>
+        </svg>
+        <p class="empty-title">还没有远程磁盘配置</p>
+        <p class="empty-hint">支持 SFTP、FTP、WebDAV，挂载后像本地磁盘一样使用</p>
+        <button id="empty-add" class="primary" type="button">创建第一个映射</button>
+      </div>
+    </div>
     <dialog id="mapping-dialog">
       <form id="mapping-form">
         <div class="dialog-heading">
           <div>
-            <p class="eyebrow">MAPPING</p>
+            <p class="eyebrow">Mapping</p>
             <h2 id="dialog-title">添加映射</h2>
           </div>
           <button id="close-dialog" class="icon-button" type="button" aria-label="关闭" title="关闭">×</button>
@@ -258,7 +292,7 @@ app.innerHTML = `
       <form id="mount-form">
         <div class="dialog-heading">
           <div>
-            <p class="eyebrow">MOUNT</p>
+            <p class="eyebrow">Mount</p>
             <h2>挂载映射</h2>
             <p id="mount-target" class="dialog-subtitle"></p>
           </div>
@@ -567,44 +601,57 @@ function renderMappings(): void {
 
   for (const runtime of mappings) {
     const { config } = runtime;
-    const item = document.createElement("article");
-    item.className = "mapping-item";
+    const authenticationStored = hasPersistedAuthentication(config);
 
-    const identity = document.createElement("div");
-    identity.className = "mapping-identity";
+    const item = document.createElement("article");
+    item.className = "mapping-card";
+
+    const top = document.createElement("div");
+    top.className = "card-top";
     const badge = document.createElement("span");
     badge.className = "protocol-badge";
+    badge.dataset.protocol = config.protocol;
     badge.textContent = config.protocol.toUpperCase();
-    const text = document.createElement("div");
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "card-title";
     const title = document.createElement("h3");
     title.textContent = config.name;
     const endpoint = document.createElement("p");
     endpoint.textContent = `${config.username ? `${config.username}@` : ""}${config.host}:${config.port}${config.remotePath}`;
-    text.append(title, endpoint);
-    identity.append(badge, text);
+    titleWrap.append(title, endpoint);
+    const pill = document.createElement("span");
+    pill.className = `status-pill status-${runtime.state}`;
+    pill.textContent = statusLabel(runtime.state);
+    if (runtime.lastError) pill.title = runtime.lastError;
+    top.append(badge, titleWrap, pill);
 
-    const destination = document.createElement("div");
-    destination.className = "destination";
-    const mountPoint = document.createElement("strong");
-    mountPoint.textContent = config.mountPoint;
-    const status = document.createElement("span");
-    status.className = `status status-${runtime.state}`;
-    status.textContent = statusLabel(runtime.state);
-    if (runtime.lastError) status.title = runtime.lastError;
-    const credential = document.createElement("span");
-    const authenticationStored = hasPersistedAuthentication(config);
-    credential.className = `credential-state ${authenticationStored ? "credential-stored" : ""}`;
-    credential.textContent = authenticationStored ? "认证已保存" : "未保存认证";
-    destination.append(mountPoint, status, credential);
+    const meta = document.createElement("div");
+    meta.className = "card-meta";
+    const mountRow = document.createElement("div");
+    mountRow.className = "meta-row";
+    const mountLabel = document.createElement("span");
+    mountLabel.textContent = "挂载点";
+    const mountValue = document.createElement("strong");
+    mountValue.textContent = config.mountPoint;
+    mountRow.append(mountLabel, mountValue);
+    const credRow = document.createElement("div");
+    credRow.className = "meta-row";
+    const credLabel = document.createElement("span");
+    credLabel.textContent = "认证凭据";
+    const credValue = document.createElement("span");
+    credValue.className = `credential-state ${authenticationStored ? "credential-stored" : ""}`;
+    credValue.textContent = authenticationStored ? "已保存" : "未保存";
+    credRow.append(credLabel, credValue);
+    meta.append(mountRow, credRow);
+    if (runtime.state === "error" && runtime.lastError) {
+      const errorLine = document.createElement("p");
+      errorLine.className = "card-error";
+      errorLine.textContent = runtime.lastError;
+      meta.append(errorLine);
+    }
 
     const actions = document.createElement("div");
-    actions.className = "item-actions";
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "secondary compact";
-    edit.textContent = "编辑";
-    edit.disabled = runtime.state === "mounting" || runtime.state === "mounted";
-    edit.addEventListener("click", () => openForm(runtime));
+    actions.className = "card-actions";
     const mount = document.createElement("button");
     mount.type = "button";
     mount.className = runtime.state === "mounted" ? "danger compact" : "primary compact";
@@ -619,15 +666,21 @@ function renderMappings(): void {
         openMountDialog(runtime);
       }
     });
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "ghost compact";
+    edit.textContent = "编辑";
+    edit.disabled = runtime.state === "mounting" || runtime.state === "mounted";
+    edit.addEventListener("click", () => openForm(runtime));
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "danger compact";
+    remove.className = "ghost danger-text compact";
     remove.textContent = "删除";
     remove.addEventListener("click", () => void deleteMapping(config.id));
     remove.disabled = runtime.state === "mounting" || runtime.state === "mounted";
     actions.append(mount, edit, remove);
 
-    item.append(identity, destination, actions);
+    item.append(top, meta, actions);
     list.append(item);
   }
 }
@@ -747,7 +800,6 @@ for (const id of ["unlock-code", "setup-code"]) {
 
 lockButton.addEventListener("click", () => {
   lockButton.disabled = true;
-  lockButton.textContent = "正在锁定...";
   clearNotice();
   void invoke<AuthStatus>("lock_app")
     .then(() => {
@@ -760,7 +812,6 @@ lockButton.addEventListener("click", () => {
     })
     .finally(() => {
       lockButton.disabled = false;
-      lockButton.textContent = "锁定";
     });
 });
 
