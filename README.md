@@ -149,6 +149,10 @@ The shared VFS uses bounded short-lived caches: metadata for 3 seconds, director
 
 Configuration is stored in `mappings.json` under the Tauri application configuration directory. Mount recovery IDs are stored separately in `mount-state.json`. Runtime errors and credentials are not persisted in either file.
 
+Use the **Import** and **Export** actions in the mapping workspace to move portable JSON configuration between machines. Exports contain mapping endpoints and approved SSH fingerprints, but no passwords, credential IDs, private-key paths, pasted-key references, or automatic-mount state. Imported mappings are merged, receive new IDs when necessary, and must be given credentials again before mounting.
+
+The project threat model, security invariants, residual risks, and private reporting route are documented in [SECURITY.md](SECURITY.md).
+
 ## CI and releases
 
 Pushes to `main` run formatting, strict Clippy, Rust tests, and the production frontend build on Windows, Ubuntu, and macOS. The release workflow then publishes a `<version>+build.<run_number>` prerelease with:
@@ -158,6 +162,8 @@ Pushes to `main` run formatting, strict Clippy, Rust tests, and the production f
 - macOS ARM64 App and DMG, including the FUSE-T installer, license, and attributions
 
 macOS signing and notarization use the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` secrets. Signing is enabled only when the repository variable `APPLE_SIGNING_ENABLED=true`; otherwise the workflow produces unsigned artifacts. Windows and Linux signing credentials are not configured yet.
+
+After all platform jobs finish, CI reads the matching sections from [CHANGES.md](CHANGES.md) and [CHANGES.zh_CN.md](CHANGES.zh_CN.md), then replaces the Release description with bilingual notes, a comparison link, and a table mapping every uploaded file to its platform, architecture, and package format.
 
 ## License
 

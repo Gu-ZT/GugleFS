@@ -30,6 +30,35 @@ impl ConfigDocument {
         }
         Ok(())
     }
+
+    pub fn load_from_path(path: &Path) -> EngineResult<Self> {
+        let content = fs::read_to_string(path)
+            .map_err(|error| EngineError::Internal(format!("read config: {error}")))?;
+        let document: Self = serde_json::from_str(&content)
+            .map_err(|error| EngineError::InvalidConfig(format!("parse config: {error}")))?;
+        document.validate()?;
+        Ok(document)
+    }
+
+    pub fn save_to_path(&self, path: &Path) -> EngineResult<()> {
+        let content = serde_json::to_vec_pretty(self)
+            .map_err(|error| EngineError::Internal(format!("serialize config: {error}")))?;
+        let parent = path.parent().ok_or_else(|| {
+            EngineError::Internal("config path does not have a parent directory".into())
+        })?;
+        fs::create_dir_all(parent)
+            .map_err(|error| EngineError::Internal(format!("create config directory: {error}")))?;
+
+        let temporary_path = path.with_extension("json.tmp");
+        fs::write(&temporary_path, content)
+            .map_err(|error| EngineError::Internal(format!("write config: {error}")))?;
+        if path.exists() {
+            fs::remove_file(path)
+                .map_err(|error| EngineError::Internal(format!("replace config: {error}")))?;
+        }
+        fs::rename(&temporary_path, path)
+            .map_err(|error| EngineError::Internal(format!("commit config: {error}")))
+    }
 }
 
 impl MappingManager {
@@ -55,33 +84,13 @@ impl MappingManager {
             return Ok(Self::default());
         }
 
-        let content = fs::read_to_string(path)
-            .map_err(|error| EngineError::Internal(format!("read config: {error}")))?;
-        let document: ConfigDocument = serde_json::from_str(&content)
-            .map_err(|error| EngineError::InvalidConfig(format!("parse config: {error}")))?;
-        document.validate()?;
+        let document = ConfigDocument::load_from_path(path)?;
         Self::from_configs(document.mappings)
     }
 
     pub fn save_to_path(&self, path: &Path) -> EngineResult<()> {
         let document = self.to_document()?;
-        let content = serde_json::to_vec_pretty(&document)
-            .map_err(|error| EngineError::Internal(format!("serialize config: {error}")))?;
-        let parent = path.parent().ok_or_else(|| {
-            EngineError::Internal("config path does not have a parent directory".into())
-        })?;
-        fs::create_dir_all(parent)
-            .map_err(|error| EngineError::Internal(format!("create config directory: {error}")))?;
-
-        let temporary_path = path.with_extension("json.tmp");
-        fs::write(&temporary_path, content)
-            .map_err(|error| EngineError::Internal(format!("write config: {error}")))?;
-        if path.exists() {
-            fs::remove_file(path)
-                .map_err(|error| EngineError::Internal(format!("replace config: {error}")))?;
-        }
-        fs::rename(&temporary_path, path)
-            .map_err(|error| EngineError::Internal(format!("commit config: {error}")))
+        document.save_to_path(path)
     }
 }
 

@@ -111,6 +111,8 @@ pub fn run() {
             commands::unlock_app,
             commands::lock_app,
             commands::list_mappings,
+            commands::export_mappings,
+            commands::import_mappings,
             commands::occupied_drive_letters,
             commands::save_mapping,
             commands::delete_mapping,

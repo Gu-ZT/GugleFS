@@ -1,6 +1,8 @@
+use std::{collections::HashSet, path::PathBuf};
+
 use guglefs_core::{
-    AuthMethod, ConnectionSecrets, EngineError, MappingConfig, MappingRuntime, MappingState,
-    MountDriver, Protocol, RemoteFileSystem,
+    AuthMethod, ConfigDocument, ConnectionSecrets, EngineError, MappingConfig, MappingManager,
+    MappingRuntime, MappingState, MountDriver, Protocol, RemoteFileSystem,
 };
 use guglefs_remote::{inspect_host_key, FtpFileSystem, SftpFileSystem, WebDavFileSystem};
 use serde::Serialize;
@@ -97,6 +99,13 @@ pub struct StartupMountResult {
     attempted: usize,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportMappingsResult {
+    mappings: Vec<MappingRuntime>,
+    imported: usize,
+}
+
 #[tauri::command]
 pub fn get_auth_status(state: State<'_, AppState>) -> CommandResult<AuthStatus> {
     state.security.status()
@@ -169,6 +178,72 @@ pub async fn lock_app(state: State<'_, AppState>) -> CommandResult<AuthStatus> {
 pub fn list_mappings(state: State<'_, AppState>) -> CommandResult<Vec<MappingRuntime>> {
     state.security.require_unlocked()?;
     state.manager.list().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn export_mappings(state: State<'_, AppState>, path: PathBuf) -> CommandResult<usize> {
+    state.security.require_unlocked()?;
+    if path == state.config_path {
+        return Err("不能覆盖应用正在使用的配置文件".into());
+    }
+    let mappings: Vec<_> = state
+        .manager
+        .list()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|runtime| runtime.config.portable())
+        .collect();
+    let exported = mappings.len();
+    ConfigDocument::current(mappings)
+        .save_to_path(&path)
+        .map_err(|error| error.to_string())?;
+    Ok(exported)
+}
+
+#[tauri::command]
+pub fn import_mappings(
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> CommandResult<ImportMappingsResult> {
+    state.security.require_unlocked()?;
+    if path == state.config_path {
+        return Err("不能从应用正在使用的配置文件导入".into());
+    }
+    let document = ConfigDocument::load_from_path(&path).map_err(|error| error.to_string())?;
+    let existing = state.manager.list().map_err(|error| error.to_string())?;
+    let mut used_ids: HashSet<_> = existing
+        .iter()
+        .map(|runtime| runtime.config.id.clone())
+        .collect();
+    let mut imported = Vec::with_capacity(document.mappings.len());
+    for mut config in document.mappings.into_iter().map(MappingConfig::portable) {
+        let base_id = config.id.clone();
+        let mut suffix = 1;
+        while !used_ids.insert(config.id.clone()) {
+            config.id = format!("{base_id}-imported-{suffix}");
+            suffix += 1;
+        }
+        imported.push(config);
+    }
+
+    let combined = existing
+        .iter()
+        .map(|runtime| runtime.config.clone())
+        .chain(imported.iter().cloned());
+    let candidate = MappingManager::from_configs(combined).map_err(|error| error.to_string())?;
+    candidate
+        .save_to_path(&state.config_path)
+        .map_err(|error| error.to_string())?;
+    for config in &imported {
+        state
+            .manager
+            .upsert(config.clone())
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(ImportMappingsResult {
+        mappings: state.manager.list().map_err(|error| error.to_string())?,
+        imported: imported.len(),
+    })
 }
 
 /// Windows 下返回已被占用的盘符：本地驱动器，以及 GugleFS 当前已挂载或

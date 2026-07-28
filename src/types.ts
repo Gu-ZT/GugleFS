@@ -58,6 +58,11 @@ export interface PlatformInfo {
   fuseTInstallerBundled: boolean;
 }
 
+export interface ImportMappingsResult {
+  mappings: MappingRuntime[];
+  imported: number;
+}
+
 export function hasPersistedAuthentication(config: MappingConfig): boolean {
   switch (config.auth.type) {
     case "password":

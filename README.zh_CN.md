@@ -144,11 +144,17 @@ SFTP 服务器需要 MFA 时，可在映射中勾选“需要 MFA”，并在测
 
 映射配置会保存到 Tauri 应用配置目录下的 `mappings.json`，文件包含 `schemaVersion`。用于解锁后恢复的映射 ID 单独保存在 `mount-state.json`，运行时错误和凭据内容不会写入这两个文件。
 
+在映射工作区使用“导入”和“导出”可以在不同设备之间迁移可移植 JSON 配置。导出内容包含远端端点和已确认的 SSH 指纹，但不包含密码、凭据 ID、本地私钥路径、粘贴私钥引用或自动挂载状态。导入会合并配置，必要时生成新 ID；重新填写凭据后才能挂载。
+
+项目的威胁模型、安全不变量、剩余风险和私下报告渠道记录在 [SECURITY.md](SECURITY.md) 中。
+
 ## CI 与发布
 
 推送到 `main` 后，GitHub Actions 会在 Windows、Ubuntu 和 macOS 上分别执行格式检查、Clippy、Rust 测试和前端生产构建，再创建 `<version>+build.<run_number>` 预发布。发布产物包括 Windows x64 NSIS、Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG；正式 GitHub Release 会采用 release tag 作为应用版本。
 
 Windows 安装包内置 WinFsp 运行时，macOS 包内置已校验的官方 FUSE-T 安装器、许可证和第三方归属声明。macOS 工作流支持通过 `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD` 和 `APPLE_TEAM_ID` secrets 完成签名与公证；确认凭据有效后还需设置仓库变量 `APPLE_SIGNING_ENABLED=true` 才会启用签名，否则生成未签名产物。Linux 和 Windows 代码签名仍需配置对应签名密钥。
+
+全部平台 job 结束后，CI 会读取 [CHANGES.md](CHANGES.md) 和 [CHANGES.zh_CN.md](CHANGES.zh_CN.md) 中与版本对应的章节，并将 Release 描述更新为双语更新说明、完整变更链接，以及标明每个附件对应平台、架构和格式的下载表格。
 
 ## 许可证
 

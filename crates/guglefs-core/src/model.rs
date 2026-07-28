@@ -104,6 +104,22 @@ impl MappingConfig {
         }
         Ok(())
     }
+
+    pub fn portable(mut self) -> Self {
+        self.auth = match self.auth {
+            AuthMethod::Password { .. } => AuthMethod::Password {
+                credential_id: None,
+            },
+            AuthMethod::PrivateKey { .. } => AuthMethod::PrivateKey {
+                key_path: None,
+                key_id: None,
+                credential_id: None,
+            },
+            AuthMethod::Anonymous => AuthMethod::Anonymous,
+        };
+        self.auto_mount = false;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,5 +193,45 @@ mod tests {
         .unwrap();
 
         assert!(!config.sftp_totp_required);
+    }
+
+    #[test]
+    fn portable_configs_remove_credential_and_private_key_references() {
+        let config = MappingConfig {
+            id: "id".into(),
+            name: "name".into(),
+            protocol: Protocol::Sftp,
+            host: "files.example.com".into(),
+            port: 22,
+            username: Some("user".into()),
+            auth: AuthMethod::PrivateKey {
+                key_path: Some("/home/user/.ssh/id_ed25519".into()),
+                key_id: Some("stored-key".into()),
+                credential_id: Some("stored-passphrase".into()),
+            },
+            remote_path: "/".into(),
+            mount_point: "/mnt/files".into(),
+            ftp_tls: false,
+            host_key_fingerprint: Some("SHA256:test".into()),
+            sftp_totp_required: false,
+            ignore_system_proxy: false,
+            auto_mount: true,
+        };
+
+        let portable = config.portable();
+
+        assert_eq!(
+            portable.auth,
+            AuthMethod::PrivateKey {
+                key_path: None,
+                key_id: None,
+                credential_id: None,
+            }
+        );
+        assert!(!portable.auto_mount);
+        assert_eq!(
+            portable.host_key_fingerprint.as_deref(),
+            Some("SHA256:test")
+        );
     }
 }

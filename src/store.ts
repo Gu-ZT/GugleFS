@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import type {
   AuthStatus,
+  ImportMappingsResult,
   MappingRuntime,
   PlatformInfo,
   StartupMountResult,
@@ -194,6 +195,18 @@ export const store = reactive({
   async installFuseT(): Promise<void> {
     await invoke("open_fuse_t_installer");
     this.setNotice("已打开 FUSE-T 安装器", "success");
+  },
+
+  async exportMappings(path: string): Promise<void> {
+    const exported = await invoke<number>("export_mappings", { path });
+    this.setNotice(`已导出 ${exported} 个配置，文件不包含凭据`, "success");
+  },
+
+  async importMappings(path: string): Promise<void> {
+    const result = await invoke<ImportMappingsResult>("import_mappings", { path });
+    this.mappings = result.mappings;
+    await this.refreshOccupiedLetters();
+    this.setNotice(`已导入 ${result.imported} 个配置，请重新填写凭据`, "success");
   },
 });
 

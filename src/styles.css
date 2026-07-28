@@ -567,8 +567,10 @@ input:disabled {
 
 .main-header-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+  justify-content: flex-end;
 }
 
 /* ---------- Runtime banner ---------- */
@@ -1186,6 +1188,17 @@ input.input-error:focus-visible {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .main-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+
+  .main-header-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .full-width {

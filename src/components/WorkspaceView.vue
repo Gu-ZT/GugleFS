@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { computed, onMounted, ref } from "vue";
 import appIconUrl from "../assets/app-icon.png";
 import { store } from "../store";
@@ -12,6 +13,7 @@ const formDialog = ref<InstanceType<typeof MappingFormDialog> | null>(null);
 const mountDialog = ref<InstanceType<typeof MountDialog> | null>(null);
 const locking = ref(false);
 const installingFuseT = ref(false);
+const transferringConfig = ref(false);
 
 const mappingCount = computed(() => `${store.mappings.length} 个配置`);
 const showFuseTBanner = computed(
@@ -58,6 +60,41 @@ function installFuseT(): void {
     .finally(() => {
       installingFuseT.value = false;
     });
+}
+
+async function importMappings(): Promise<void> {
+  transferringConfig.value = true;
+  try {
+    const selected = await openFileDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "GugleFS JSON", extensions: ["json"] }],
+    });
+    if (typeof selected === "string") {
+      await store.importMappings(selected);
+    }
+  } catch (error) {
+    store.setNotice(String(error));
+  } finally {
+    transferringConfig.value = false;
+  }
+}
+
+async function exportMappings(): Promise<void> {
+  transferringConfig.value = true;
+  try {
+    const selected = await saveFileDialog({
+      defaultPath: "guglefs-mappings.json",
+      filters: [{ name: "GugleFS JSON", extensions: ["json"] }],
+    });
+    if (typeof selected === "string") {
+      await store.exportMappings(selected);
+    }
+  } catch (error) {
+    store.setNotice(String(error));
+  } finally {
+    transferringConfig.value = false;
+  }
 }
 </script>
 
@@ -131,6 +168,28 @@ function installFuseT(): void {
           <p class="main-header-count">{{ mappingCount }}</p>
         </div>
         <div class="main-header-actions">
+          <button
+            class="secondary compact"
+            type="button"
+            :disabled="transferringConfig"
+            @click="importMappings"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 2v8M5 7l3 3 3-3M3 13h10" />
+            </svg>
+            导入
+          </button>
+          <button
+            class="secondary compact"
+            type="button"
+            :disabled="transferringConfig || store.mappings.length === 0"
+            @click="exportMappings"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 10V2M5 5l3-3 3 3M3 13h10" />
+            </svg>
+            导出
+          </button>
           <button class="icon-button" type="button" title="刷新" aria-label="刷新" @click="store.loadMappings()">
             <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" />

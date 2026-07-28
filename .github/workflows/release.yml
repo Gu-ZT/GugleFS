@@ -58,6 +58,7 @@ jobs:
           key: ${{ runner.os }}-quality
 
       - run: pnpm install --frozen-lockfile
+      - run: node --test scripts/update-release-notes.test.mjs
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -231,3 +232,26 @@ jobs:
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
           args: --target aarch64-apple-darwin --bundles app,dmg
+
+  update-release-notes:
+    needs: [prepare, build-windows, build-linux, build-macos]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes and download table
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh api "repos/$REPO/releases/$RELEASE_ID" > release.json
+          git fetch --force --tags
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          GITHUB_REPOSITORY="$REPO" node scripts/update-release-notes.mjs \
+            release.json "$TAG" "$PREVIOUS_TAG" body.md
+          gh api -X PATCH "repos/$REPO/releases/$RELEASE_ID" -F body=@body.md
