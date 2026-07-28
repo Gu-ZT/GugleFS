@@ -681,7 +681,11 @@ function renderMappings(): void {
     remove.disabled = runtime.state === "mounting" || runtime.state === "mounted";
     actions.append(mount, edit, remove);
 
-    item.append(top, meta, actions);
+    const bottom = document.createElement("div");
+    bottom.className = "card-bottom";
+    bottom.append(meta, actions);
+
+    item.append(top, bottom);
     list.append(item);
   }
 }
