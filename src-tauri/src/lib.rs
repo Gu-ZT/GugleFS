@@ -2,6 +2,7 @@ mod commands;
 mod diagnostics;
 mod mount_state;
 mod security;
+mod session_state;
 
 use std::{collections::HashMap, path::PathBuf};
 
@@ -10,6 +11,7 @@ use guglefs_core::MappingManager;
 use guglefs_mount::SystemMountDriver;
 use mount_state::MountStateStore;
 use security::SecurityManager;
+use session_state::SessionState;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
@@ -25,6 +27,7 @@ pub struct AppState {
     pub remote_browsers: tokio::sync::Mutex<HashMap<String, commands::RemoteBrowserSession>>,
     pub diagnostics: DiagnosticStore,
     pub security: SecurityManager,
+    pub session_state: SessionState,
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -65,7 +68,12 @@ pub fn run() {
                 .map_err(std::io::Error::other)?;
             let diagnostics =
                 DiagnosticStore::new(config_dir.join("logs")).map_err(std::io::Error::other)?;
+            let session_state = SessionState::begin(config_dir.join("session-running"))
+                .map_err(std::io::Error::other)?;
             diagnostics.record("application_start", None, "success");
+            if session_state.previous_session_unclean() {
+                diagnostics.record("previous_session_unclean", None, "detected");
+            }
             app.manage(AppState {
                 manager,
                 config_path,
@@ -75,6 +83,7 @@ pub fn run() {
                 remote_browsers: tokio::sync::Mutex::new(HashMap::new()),
                 diagnostics,
                 security: SecurityManager::default(),
+                session_state,
             });
 
             let open_item = MenuItem::with_id(app, "open", "打开 GugleFS", true, None::<&str>)?;
@@ -143,7 +152,9 @@ pub fn run() {
     app.run(|app, event| {
         if let RunEvent::ExitRequested { .. } = event {
             if let Some(state) = app.try_state::<AppState>() {
-                let _ = state.mount_driver.unmount_all();
+                if state.session_state.begin_exit() && state.mount_driver.unmount_all().is_ok() {
+                    let _ = state.session_state.mark_clean();
+                }
             }
         }
     });

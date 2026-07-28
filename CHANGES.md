@@ -9,6 +9,7 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 - Added backend-driven mount lifecycle events, including an explicit unmounting state used by startup recovery and app locking.
 - Added per-mapping remote I/O limits, control/transfer timeouts, safe one-shot retries, and FTP session recovery.
 - Improved keyboard operation, dialog focus, contextual screen-reader labels, and live mount/error announcements.
+- Added non-sensitive unclean-exit detection with post-unlock mapping recovery guidance.
 
 ## [0.9.0] - 2026-07-29
 

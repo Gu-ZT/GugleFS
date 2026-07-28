@@ -31,12 +31,16 @@ pub struct PlatformInfo {
     fuse_t_required: bool,
     fuse_t_installed: bool,
     fuse_t_installer_bundled: bool,
+    previous_session_unclean: bool,
 }
 
 const FUSE_T_INSTALLER_NAME: &str = "fuse-t-macos-installer-1.2.7.pkg";
 
 #[tauri::command]
-pub fn get_platform_info(app: AppHandle) -> CommandResult<PlatformInfo> {
+pub fn get_platform_info(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<PlatformInfo> {
     let default_mount_point = if cfg!(target_os = "windows") {
         "Z:".to_string()
     } else {
@@ -59,6 +63,7 @@ pub fn get_platform_info(app: AppHandle) -> CommandResult<PlatformInfo> {
         fuse_t_required: cfg!(target_os = "macos"),
         fuse_t_installed: fuse_t_is_installed(),
         fuse_t_installer_bundled,
+        previous_session_unclean: state.session_state.previous_session_unclean(),
     })
 }
 
@@ -1119,13 +1124,15 @@ mod tests {
             fuse_t_required: true,
             fuse_t_installed: false,
             fuse_t_installer_bundled: true,
+            previous_session_unclean: true,
         })
         .expect("platform info should serialize");
 
         assert_eq!(value["fuseTRequired"], true);
         assert_eq!(value["fuseTInstalled"], false);
         assert_eq!(value["fuseTInstallerBundled"], true);
-        assert_eq!(value.as_object().map(serde_json::Map::len), Some(6));
+        assert_eq!(value["previousSessionUnclean"], true);
+        assert_eq!(value.as_object().map(serde_json::Map::len), Some(7));
     }
 
     fn sftp_runtime(mfa_required: bool) -> MappingRuntime {

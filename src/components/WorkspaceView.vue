@@ -197,6 +197,20 @@ async function exportDiagnostics(): Promise<void> {
     </aside>
 
     <main class="main-panel">
+      <section
+        v-if="store.platformInfo.previousSessionUnclean"
+        class="runtime-banner recovery-banner"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="runtime-banner-content">
+          <div>
+            <strong>检测到上次未正常退出</strong>
+            <p>已保存凭据的映射会按恢复状态重新挂载，请核对远端连接和近期文件。</p>
+          </div>
+        </div>
+      </section>
+
       <section v-if="showFuseTBanner" class="runtime-banner" aria-live="polite">
         <div class="runtime-banner-content">
           <div>

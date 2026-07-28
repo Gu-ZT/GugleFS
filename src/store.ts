@@ -35,6 +35,7 @@ export const store = reactive({
     fuseTRequired: false,
     fuseTInstalled: true,
     fuseTInstallerBundled: false,
+    previousSessionUnclean: false,
   } as PlatformInfo,
   mappings: [] as MappingRuntime[],
   notice: null as Notice | null,

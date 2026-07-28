@@ -65,6 +65,7 @@ export interface PlatformInfo {
   fuseTRequired: boolean;
   fuseTInstalled: boolean;
   fuseTInstallerBundled: boolean;
+  previousSessionUnclean: boolean;
 }
 
 export interface ImportMappingsResult {

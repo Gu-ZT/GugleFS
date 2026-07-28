@@ -147,6 +147,8 @@ Locking the app safely unmounts active mappings before showing the 2FA screen. A
 
 Mount and unmount commands run on Tauri's async runtime and serialize driver transitions in the backend. Every `mounting`, `unmounting`, `mounted`, `unmounted`, or `error` transition is emitted to the frontend, so manual actions, startup recovery, and lock-triggered unmounting share one live state source. These tasks remain attached to the application lifecycle so tray Exit can still stop every filesystem before the process exits.
 
+GugleFS creates a fixed, non-sensitive `session-running` marker while the process is active and removes it only after a safe exit has stopped every process-owned mount. A marker left by a crash, forced termination, or unmount failure is detected on the next launch. After 2FA unlock, the existing recovery state remounts eligible mappings with saved credentials and the workspace asks the user to verify recent files and connections.
+
 Closing the main window hides it in the system tray while mounts keep running. Double-clicking the tray icon opens and focuses the main window. The tray Exit command unmounts every filesystem created by the process before exiting. A single-instance guard prevents two GugleFS processes from claiming the same mount point.
 
 The workspace and native dialogs are fully keyboard reachable. `Ctrl+N`/`Cmd+N` opens a new mapping dialog and `Ctrl+R`/`Cmd+R` refreshes mappings without reloading the webview. Dialogs focus their first relevant field, repeated mapping actions include the mapping name for assistive technology, and mount transitions and errors use live announcements.
