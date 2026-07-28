@@ -17,7 +17,7 @@ jobs:
         os: [windows-latest, ubuntu-22.04, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Windows mount SDK
         if: runner.os == 'Windows'
@@ -41,9 +41,9 @@ jobs:
           echo "PKG_CONFIG_PATH=$GITHUB_WORKSPACE/scripts/pkgconfig/fuse-t" >> "$GITHUB_ENV"
           PKG_CONFIG_PATH="$GITHUB_WORKSPACE/scripts/pkgconfig/fuse-t" pkg-config --libs fuse
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -71,7 +71,7 @@ jobs:
       release_id: ${{ steps.info.outputs.release_id }}
       tag: ${{ steps.info.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve release
         id: info
@@ -113,7 +113,7 @@ jobs:
     needs: prepare
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install WinFsp SDK
         shell: pwsh
@@ -126,8 +126,8 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: node scripts/set-release-version.mjs "$TAG"
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -150,7 +150,7 @@ jobs:
     needs: prepare
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -163,8 +163,8 @@ jobs:
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: node scripts/set-release-version.mjs "$TAG"
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -185,7 +185,7 @@ jobs:
     needs: prepare
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install FUSE-T build runtime
         run: |
           brew install pkgconf
@@ -197,8 +197,8 @@ jobs:
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: node scripts/set-release-version.mjs "$TAG"
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -238,7 +238,7 @@ jobs:
     if: ${{ !cancelled() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
