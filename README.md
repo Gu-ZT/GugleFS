@@ -43,7 +43,7 @@ Windows 开发环境还需要：
 - `Desktop development with C++` 工作负载及 Windows 10/11 SDK
 - WebView2（现代 Windows 通常已经包含）
 
-安装后请重新打开终端，确认 `cargo` 和 MSVC 的 `link.exe` 可用。构建和使用 Windows 挂载功能还需安装 WinFsp 2.1（开发环境安装 SDK，普通用户安装运行时）。
+安装后请重新打开终端，确认 `cargo` 和 MSVC 的 `link.exe` 可用。Windows 源码构建还需安装 WinFsp 2.1 SDK；发布安装包会自动安装运行时。
 
 ```bash
 pnpm install
@@ -58,7 +58,7 @@ pnpm check
 
 ### Windows mount runtime
 
-使用 FTP、FTPS、SFTP 或 WebDAV 映射前需安装 [WinFsp 2.1](https://github.com/winfsp/winfsp/releases)。GugleFS 会在挂载时加载 WinFsp，挂载点可以是 `Z:` 这样的盘符，也可以是已存在的绝对目录。FTP 默认使用被动模式，支持标准 FTP 和显式 FTPS；不支持已弃用的隐式 FTPS。
+发布的 Windows NSIS 安装包会自动安装 [WinFsp 2.1](https://github.com/winfsp/winfsp/releases) 运行时。开发环境构建仍需安装 WinFsp 2.1 SDK。GugleFS 会在挂载时加载 WinFsp，挂载点可以是 `Z:` 这样的盘符，也可以是已存在的绝对目录。FTP 默认使用被动模式，支持标准 FTP 和显式 FTPS；不支持已弃用的隐式 FTPS。
 
 SFTP 支持密码认证，以及 OpenSSH/PEM 私钥认证。私钥可以选择本地文件，也可以直接粘贴；本地文件模式只保存路径，粘贴模式会将私钥分块保存到 Windows Credential Manager。加密私钥的口令可以单独保存。首次连接会显示服务器 SHA-256 主机密钥指纹，确认后固定到映射配置；后续密钥变化必须重新确认。
 
@@ -76,6 +76,6 @@ SFTP 支持密码认证，以及 OpenSSH/PEM 私钥认证。私钥可以选择�
 
 ## CI 与发布
 
-推送到 `main` 后，GitHub Actions 会先在 Windows 执行格式检查、Clippy、Rust 测试和前端生产构建，再创建 `<version>+build.<run_number>` 预发布，并上传 Windows x64 的 NSIS/MSI 安装文件。发布 GitHub Release 时，同一 workflow 会采用 release tag 作为应用版本并将安装文件附加到该 release。
+推送到 `main` 后，GitHub Actions 会先在 Windows 安装 WinFsp SDK，执行格式检查、Clippy、Rust 测试和前端生产构建，再创建 `<version>+build.<run_number>` 预发布，并上传内置 WinFsp 运行时的 Windows x64 NSIS 安装文件。发布 GitHub Release 时，同一 workflow 会采用 release tag 作为应用版本并将安装文件附加到该 release。
 
-当前自动发布仅构建 Windows x64，因为 WinFsp 是现阶段唯一完成的系统挂载驱动。安装包暂不内置 WinFsp，使用挂载功能前仍需按上文安装 WinFsp 2.1 运行时。
+当前自动发布仅构建 Windows x64，因为 WinFsp 是现阶段唯一完成的系统挂载驱动。NSIS 安装包会在应用安装完成后静默安装 WinFsp 2.1 运行时，因此用户无需额外下载安装 WinFsp。

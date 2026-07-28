@@ -15,6 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install WinFsp SDK
+        shell: pwsh
+        run: ./scripts/prepare-winfsp.ps1 -Install
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -88,6 +92,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install WinFsp SDK
+        shell: pwsh
+        run: ./scripts/prepare-winfsp.ps1 -Install
+
       - name: Set app version from release tag
         if: github.event_name == 'release'
         shell: bash
@@ -125,4 +133,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
-          args: --target x86_64-pc-windows-msvc
+          args: --target x86_64-pc-windows-msvc --bundles nsis
