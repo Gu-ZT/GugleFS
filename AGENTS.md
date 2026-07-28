@@ -29,6 +29,8 @@ git diff --check
 
 On Windows, use the bundled WinFsp preparation script when the SDK is unavailable. On macOS, install FUSE-T and export `PKG_CONFIG_PATH="$PWD/scripts/pkgconfig/fuse-t${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"` before Rust builds.
 
+Run the ignored real-protocol suite with `scripts/integration/protocols.compose.yml` and the `GUGLEFS_TEST_FTP_*` / `GUGLEFS_TEST_SFTP_*` environment variables. Do not mark protocol integration complete until that suite passes against the repository containers in CI.
+
 ## Documentation And Releases
 
 - Before every commit, update `TODO.md` and both README files for behavior changed by that commit.

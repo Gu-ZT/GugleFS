@@ -64,8 +64,56 @@ jobs:
       - run: cargo test --workspace --locked
       - run: pnpm run web:build
 
+  protocol-integration:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: linux-protocol-integration
+
+      - name: Start FTP and SFTP test services
+        run: |
+          docker compose -f scripts/integration/protocols.compose.yml up -d
+          for port in 2121 2222; do
+            ready=false
+            for attempt in $(seq 1 60); do
+              if (echo >"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+                ready=true
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" != true ]; then
+              echo "test service on port $port did not become ready" >&2
+              exit 1
+            fi
+          done
+
+      - name: Run real protocol integration tests
+        env:
+          GUGLEFS_TEST_FTP_HOST: 127.0.0.1
+          GUGLEFS_TEST_FTP_PORT: 2121
+          GUGLEFS_TEST_SFTP_HOST: 127.0.0.1
+          GUGLEFS_TEST_SFTP_PORT: 2222
+        run: >-
+          cargo test -p guglefs-remote --test protocol_integration --locked --
+          --ignored --test-threads=1
+
+      - name: Collect protocol service logs
+        if: always()
+        run: docker compose -f scripts/integration/protocols.compose.yml logs
+
+      - name: Stop protocol test services
+        if: always()
+        run: docker compose -f scripts/integration/protocols.compose.yml down --volumes
+
   prepare:
-    needs: quality
+    needs: [quality, protocol-integration]
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.info.outputs.release_id }}
