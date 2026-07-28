@@ -112,6 +112,8 @@ pnpm check
 
 Windows NSIS 安装包内置并静默安装 [WinFsp 2.1](https://github.com/winfsp/winfsp/releases) 运行时，挂载点可以是 `Z:` 盘符或绝对目录。WinFsp 会自行创建目录挂载点；GugleFS 会暂时移除已有空目录并在正常卸载后恢复，非空目录会被拒绝。
 
+Windows 挂载使用大小写不敏感查找，同时保留远端服务器上的原始拼写。精确大小写匹配优先；如果远端同一目录包含多个仅大小写不同的名称，目录只确定性显示其中一个，非精确的歧义访问会失败，不会打开错误文件。新建和重命名会拒绝 Windows 保留设备名、非法字符、尾随空格/点、无效 UTF-16 和超长分量。Windows 无法表示的既有远端条目不会显示在挂载目录中，需要使用协议原生客户端重命名。目录、点号开头的隐藏条目和普通文件归档属性会被投影；远端协议没有原生对应项时，可变 Windows 属性和时间戳暂不持久化。
+
 Linux 使用 FUSE3，挂载点是绝对目录；DEB 包声明 `fuse3` 和 `libsecret-1-0` 依赖。macOS App/DMG 内置官方 FUSE-T 1.2.7 安装器，检测到运行时缺失时可从应用内打开。安装仍需管理员授权，但 FUSE-T 通过本机 NFS、SMB 或 FSKit 后端运行在用户空间，不需要内核或系统扩展；部分应用首次访问挂载点时需要在“隐私与安全性 -> 文件与文件夹”中允许“网络宗卷”。不存在的 Unix 挂载目录会在首次挂载时创建，已有目录必须为空。
 
 FUSE-T 二进制许可允许非商业用途再分发；商业使用或随商业软件捆绑需要从 FUSE-T 作者处取得商业许可。GugleFS 分发未经修改的官方 PKG，固定 SHA-256，并随包附带[FUSE-T 许可条款](THIRD_PARTY_LICENSES/FUSE-T-LICENSE.txt)和[第三方归属声明](THIRD_PARTY_LICENSES/FUSE-T-ATTRIBUTIONS.txt)。

@@ -11,6 +11,7 @@ GugleFS 的重要变更记录在此。Release 描述会读取与应用版本匹�
 - 为 SFTP 映射增加跨平台 SSH Agent 认证，以及经过服务器当前密钥校验的 OpenSSH `known_hosts` 导入。
 - 为 WebDAV 增加强 ETag/Last-Modified 条件写入、并发冲突检测、安全的零偏移写入和非零截断。
 - 为 WebDAV 增加 Digest、Bearer Token、匿名和本地 PEM 客户端证书认证。
+- 为 WinFsp 增加大小写不敏感且保留拼写的查找、冲突检测、Windows 文件名校验和基础属性投影。
 
 ## [0.8.0] - 2026-07-29
 

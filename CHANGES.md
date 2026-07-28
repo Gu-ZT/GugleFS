@@ -11,6 +11,7 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 - Added cross-platform SSH Agent authentication and verified OpenSSH `known_hosts` import for SFTP mappings.
 - Added conditional WebDAV writes using ETag/Last-Modified validators, conflict detection, safe offset-zero writes, and nonzero truncation.
 - Added WebDAV Digest, Bearer Token, anonymous, and local PEM client-certificate authentication.
+- Added case-insensitive, case-preserving WinFsp lookup with collision detection, Windows filename validation, and basic attribute projection.
 
 ## [0.8.0] - 2026-07-29
 

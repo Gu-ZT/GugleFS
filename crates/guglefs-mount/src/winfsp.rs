@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     path::Path,
     sync::{
@@ -22,8 +22,9 @@ use winfsp_wrs::{
     FileAttributes, FileInfo, FileSystem, FileSystemInterface, OperationGuardStrategy, Params,
     SecurityDescriptor, VolumeInfo, WriteMode, NTSTATUS, STATUS_ACCESS_DENIED,
     STATUS_DIRECTORY_NOT_EMPTY, STATUS_FILE_IS_A_DIRECTORY, STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER, STATUS_IO_DEVICE_ERROR, STATUS_NOT_A_DIRECTORY, STATUS_NOT_SUPPORTED,
-    STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND,
+    STATUS_INVALID_PARAMETER, STATUS_IO_DEVICE_ERROR, STATUS_NAME_TOO_LONG, STATUS_NOT_A_DIRECTORY,
+    STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID,
+    STATUS_OBJECT_NAME_NOT_FOUND,
 };
 
 type DynamicVfs = RemoteVfs<dyn RemoteFileSystem>;
@@ -104,19 +105,86 @@ impl MountContext {
 
     fn file_info(&self, path: &str) -> Result<FileInfo, NTSTATUS> {
         let metadata = self.metadata(path)?;
-        Ok(file_info(&metadata))
+        Ok(file_info(path, &metadata))
+    }
+
+    fn directory_entries(&self, path: &str) -> Result<Vec<guglefs_core::DirectoryEntry>, NTSTATUS> {
+        let handle = self.block_on(self.vfs.open_dir(path))?;
+        let entries = self.block_on(self.vfs.readdir(handle));
+        let release = self.block_on(self.vfs.release_dir(handle));
+        match (entries, release) {
+            (Ok(entries), Ok(())) => Ok(entries),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
+    }
+
+    fn resolve_existing_path(&self, requested: &str) -> Result<String, NTSTATUS> {
+        if requested == "/" {
+            return Ok("/".into());
+        }
+        match self.metadata(requested) {
+            Ok(_) => return Ok(requested.into()),
+            Err(status) if status == STATUS_OBJECT_NAME_NOT_FOUND => {}
+            Err(status) => return Err(status),
+        }
+
+        let mut resolved = "/".to_string();
+        for component in requested.trim_start_matches('/').split('/') {
+            let entries = self.directory_entries(&resolved)?;
+            let name =
+                matching_windows_name(component, &entries)?.ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
+            resolved = join_vfs_path(&resolved, name);
+        }
+        Ok(resolved)
+    }
+
+    fn resolve_new_path(&self, requested: &str) -> Result<String, NTSTATUS> {
+        let (parent, name) = split_vfs_path(requested).ok_or(STATUS_OBJECT_NAME_INVALID)?;
+        let resolved_parent = self.resolve_existing_path(parent)?;
+        let entries = self.directory_entries(&resolved_parent)?;
+        if matching_windows_name(name, &entries)?.is_some() {
+            return Err(STATUS_OBJECT_NAME_COLLISION);
+        }
+        Ok(join_vfs_path(&resolved_parent, name))
+    }
+
+    fn resolve_rename_target(
+        &self,
+        requested: &str,
+        source: &str,
+        replace_if_exists: bool,
+    ) -> Result<String, NTSTATUS> {
+        let (parent, name) = split_vfs_path(requested).ok_or(STATUS_OBJECT_NAME_INVALID)?;
+        let resolved_parent = self.resolve_existing_path(parent)?;
+        let entries = self.directory_entries(&resolved_parent)?;
+        let Some(existing_name) = matching_windows_name(name, &entries)? else {
+            return Ok(join_vfs_path(&resolved_parent, name));
+        };
+        let existing = join_vfs_path(&resolved_parent, existing_name);
+        if existing == source {
+            return Ok(join_vfs_path(&resolved_parent, name));
+        }
+        if !replace_if_exists {
+            return Err(STATUS_OBJECT_NAME_COLLISION);
+        }
+        Ok(existing)
     }
 }
 
 impl MountCallbacks {
     fn path(file_name: &U16CStr) -> Result<String, NTSTATUS> {
-        let value = file_name.to_string_lossy().replace('\\', "/");
+        let value = file_name
+            .to_string()
+            .map_err(|_| STATUS_OBJECT_NAME_INVALID)?
+            .replace('\\', "/");
         let value = value.trim_matches('/');
-        if value.is_empty() {
-            Ok("/".into())
+        let path = if value.is_empty() {
+            "/".into()
         } else {
-            Ok(format!("/{value}"))
-        }
+            format!("/{value}")
+        };
+        validate_windows_path(&path)?;
+        Ok(path)
     }
 
     fn context_path(file_context: &WinHandle) -> Result<String, NTSTATUS> {
@@ -142,10 +210,11 @@ impl MountCallbacks {
 
     fn open_existing(
         &self,
-        path: String,
+        requested_path: String,
         create_options: CreateOptions,
         granted_access: FileAccessRights,
     ) -> Result<(Arc<WinHandle>, FileInfo), NTSTATUS> {
+        let path = self.mount.resolve_existing_path(&requested_path)?;
         let writable = Self::access_is_writable(granted_access);
         let readable = Self::access_is_readable(granted_access) || !writable;
         let metadata = self.mount.metadata(&path)?;
@@ -169,6 +238,7 @@ impl MountCallbacks {
                 HandleKind::File(handle)
             }
         };
+        let info = file_info(&path, &metadata);
         Ok((
             Arc::new(WinHandle {
                 mount: self.mount.clone(),
@@ -178,17 +248,18 @@ impl MountCallbacks {
                 writable,
                 delete_requested: AtomicBool::new(false),
             }),
-            file_info(&metadata),
+            info,
         ))
     }
 
     fn create_new(
         &self,
-        path: String,
+        requested_path: String,
         create_info: CreateFileInfo,
         security_descriptor: SecurityDescriptor,
     ) -> Result<(Arc<WinHandle>, FileInfo), NTSTATUS> {
         let _ = security_descriptor;
+        let path = self.mount.resolve_new_path(&requested_path)?;
         let directory = create_info
             .create_options
             .is(CreateOptions::FILE_DIRECTORY_FILE);
@@ -210,6 +281,7 @@ impl MountCallbacks {
             HandleKind::File(file_handle)
         };
         let metadata = self.mount.metadata(&path)?;
+        let info = file_info(&path, &metadata);
         Ok((
             Arc::new(WinHandle {
                 mount: self.mount.clone(),
@@ -223,7 +295,7 @@ impl MountCallbacks {
                 writable: true,
                 delete_requested: AtomicBool::new(false),
             }),
-            file_info(&metadata),
+            info,
         ))
     }
 
@@ -436,10 +508,14 @@ impl FileSystemInterface for MountCallbacks {
         file_context: Self::FileContext,
         _file_name: &U16CStr,
         new_file_name: &U16CStr,
-        _replace_if_exists: bool,
+        replace_if_exists: bool,
     ) -> Result<(), NTSTATUS> {
-        let target = Self::path(new_file_name)?;
         let source = Self::context_path(&file_context)?;
+        let target = file_context.mount.resolve_rename_target(
+            &Self::path(new_file_name)?,
+            &source,
+            replace_if_exists,
+        )?;
         file_context
             .mount
             .block_on(file_context.mount.vfs.rename(&source, &target))?;
@@ -462,16 +538,28 @@ impl FileSystemInterface for MountCallbacks {
         let mut entries = file_context
             .mount
             .block_on(file_context.mount.vfs.readdir(handle))?;
-        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        entries.retain(|entry| validate_windows_component(&entry.name).is_ok());
+        entries.sort_by(|left, right| {
+            windows_name_key(&left.name)
+                .cmp(&windows_name_key(&right.name))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        let mut seen = HashSet::new();
         let marker = marker.map(|value| value.to_string_lossy());
         for entry in entries {
+            if !seen.insert(windows_name_key(&entry.name)) {
+                continue;
+            }
             if marker
                 .as_deref()
-                .is_some_and(|value| entry.name.as_str() <= value)
+                .is_some_and(|value| windows_name_key(&entry.name) <= windows_name_key(value))
             {
                 continue;
             }
-            if !add_dir_info(DirInfo::from_str(file_info(&entry.metadata), &entry.name)) {
+            if !add_dir_info(DirInfo::from_str(
+                file_info(&entry.path, &entry.metadata),
+                &entry.name,
+            )) {
                 break;
             }
         }
@@ -529,7 +617,7 @@ impl MountDriver for SystemMountDriver {
         let restore_empty_directory = prepare_directory_mount_point(&mount_point)?;
         let mut volume_params = winfsp_wrs::VolumeParams::default();
         volume_params
-            .set_case_sensitive_search(true)
+            .set_case_sensitive_search(false)
             .set_case_preserved_names(true)
             .set_unicode_on_disk(true)
             .set_pass_query_directory_pattern(true)
@@ -709,12 +797,99 @@ fn stale_winfsp_mount_point(path: &Path) -> bool {
     })
 }
 
-fn file_info(metadata: &FileMetadata) -> FileInfo {
-    let attributes = if metadata.kind == EntryKind::Directory {
+fn validate_windows_path(path: &str) -> Result<(), NTSTATUS> {
+    if path.encode_utf16().count() > 32_767 {
+        return Err(STATUS_NAME_TOO_LONG);
+    }
+    for component in path.trim_start_matches('/').split('/') {
+        if !component.is_empty() {
+            validate_windows_component(component)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_windows_component(component: &str) -> Result<(), NTSTATUS> {
+    if component.encode_utf16().count() > 255 {
+        return Err(STATUS_NAME_TOO_LONG);
+    }
+    if component.is_empty()
+        || matches!(component, "." | "..")
+        || component.ends_with([' ', '.'])
+        || component
+            .chars()
+            .any(|character| character <= '\u{1f}' || "<>:\"/\\|?*".contains(character))
+    {
+        return Err(STATUS_OBJECT_NAME_INVALID);
+    }
+    let base_name = component
+        .split('.')
+        .next()
+        .unwrap_or(component)
+        .trim_end_matches([' ', '.'])
+        .to_ascii_uppercase();
+    let reserved = matches!(base_name.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || base_name
+            .strip_prefix("COM")
+            .or_else(|| base_name.strip_prefix("LPT"))
+            .is_some_and(|suffix| suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9'));
+    if reserved {
+        return Err(STATUS_OBJECT_NAME_INVALID);
+    }
+    Ok(())
+}
+
+fn windows_name_key(name: &str) -> String {
+    name.to_lowercase()
+}
+
+fn matching_windows_name<'a>(
+    requested: &str,
+    entries: &'a [guglefs_core::DirectoryEntry],
+) -> Result<Option<&'a str>, NTSTATUS> {
+    if let Some(exact) = entries.iter().find(|entry| entry.name == requested) {
+        return Ok(Some(exact.name.as_str()));
+    }
+    let requested_key = windows_name_key(requested);
+    let mut matches = entries
+        .iter()
+        .filter(|entry| windows_name_key(&entry.name) == requested_key);
+    let Some(first) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err(STATUS_OBJECT_NAME_COLLISION);
+    }
+    Ok(Some(first.name.as_str()))
+}
+
+fn split_vfs_path(path: &str) -> Option<(&str, &str)> {
+    let path = path.trim_end_matches('/');
+    let (parent, name) = path.rsplit_once('/')?;
+    (!name.is_empty()).then_some((if parent.is_empty() { "/" } else { parent }, name))
+}
+
+fn join_vfs_path(parent: &str, name: &str) -> String {
+    if parent == "/" {
+        format!("/{name}")
+    } else {
+        format!("{}/{name}", parent.trim_end_matches('/'))
+    }
+}
+
+fn file_info(path: &str, metadata: &FileMetadata) -> FileInfo {
+    let mut attributes = if metadata.kind == EntryKind::Directory {
         FileAttributes::DIRECTORY
     } else {
-        FileAttributes::NORMAL
+        FileAttributes::ARCHIVE
     };
+    if path
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.starts_with('.') && name.len() > 1)
+    {
+        attributes |= FileAttributes::HIDDEN;
+    }
     FileInfo::default()
         .set_file_attributes(attributes)
         .set_file_size(metadata.size)
@@ -763,6 +938,7 @@ fn ntstatus(error: EngineError) -> NTSTATUS {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guglefs_core::DirectoryEntry;
     use std::{
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
@@ -784,6 +960,14 @@ mod tests {
             kind,
             size: 0,
             modified: None,
+        }
+    }
+
+    fn entry(name: &str) -> DirectoryEntry {
+        DirectoryEntry {
+            path: format!("/{name}"),
+            name: name.into(),
+            metadata: metadata(EntryKind::File),
         }
     }
 
@@ -824,6 +1008,59 @@ mod tests {
         assert_eq!(normalize_mount_point("z:").unwrap(), "Z:");
         assert_eq!(normalize_mount_point("z:\\").unwrap(), "Z:");
         assert_eq!(normalize_mount_point("Z:/").unwrap(), "Z:");
+    }
+
+    #[test]
+    fn validates_windows_file_name_components() {
+        for valid in ["readme.txt", "中文 文档.txt", ".gitignore", "COM10.txt"] {
+            assert_eq!(validate_windows_component(valid), Ok(()), "{valid}");
+        }
+        for invalid in [
+            "CON",
+            "con.txt",
+            "LPT1.log",
+            "bad:name",
+            "trailing.",
+            "trailing ",
+            ".",
+            "..",
+        ] {
+            assert_eq!(
+                validate_windows_component(invalid),
+                Err(STATUS_OBJECT_NAME_INVALID),
+                "{invalid}"
+            );
+        }
+        assert_eq!(
+            validate_windows_component(&"x".repeat(256)),
+            Err(STATUS_NAME_TOO_LONG)
+        );
+    }
+
+    #[test]
+    fn resolves_names_case_insensitively_but_prefers_exact_matches() {
+        let entries = vec![entry("Readme.txt"), entry("README.TXT")];
+
+        assert_eq!(
+            matching_windows_name("Readme.txt", &entries),
+            Ok(Some("Readme.txt"))
+        );
+        assert_eq!(
+            matching_windows_name("readme.txt", &entries),
+            Err(STATUS_OBJECT_NAME_COLLISION)
+        );
+        assert_eq!(matching_windows_name("other.txt", &entries), Ok(None));
+    }
+
+    #[test]
+    fn projects_basic_windows_attributes_from_remote_names() {
+        let hidden = file_info("/.settings", &metadata(EntryKind::File)).file_attributes();
+        assert!(hidden.is(FileAttributes::HIDDEN));
+        assert!(hidden.is(FileAttributes::ARCHIVE));
+
+        let directory = file_info("/docs", &metadata(EntryKind::Directory)).file_attributes();
+        assert!(directory.is(FileAttributes::DIRECTORY));
+        assert!(!directory.is(FileAttributes::HIDDEN));
     }
 
     #[test]

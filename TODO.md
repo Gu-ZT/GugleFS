@@ -61,7 +61,9 @@
 - [x] Windows：选型并接入 WinFsp Rust bindings
 - [x] Windows：实现盘符/目录挂载、占用检测和安全卸载
 - [x] Windows：恢复空目录挂载点并清理失效的 WinFsp 目录 reparse point
-- [ ] Windows：处理大小写、Windows 文件名限制和文件属性
+- [x] Windows：实现大小写不敏感查找、保留远端拼写、大小写冲突检测和 Windows 文件名校验
+- [x] Windows：投影目录、隐藏文件和归档文件基础属性
+- [ ] Windows：在不支持原生属性的远端持久化可变 Windows 文件属性和时间戳
 - [x] Linux：接入 FUSE3，完成挂载、卸载和基础权限映射
 - [x] macOS：接入 FUSE-T 1.2.7，完成无内核扩展挂载、安全卸载和通过 pkg-config shim 直接链接 `libfuse-t`
 - [ ] macOS：配置签名、公证证书并验证发布产物
