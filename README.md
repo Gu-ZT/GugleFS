@@ -161,6 +161,8 @@ The shared VFS uses bounded short-lived caches: metadata for 3 seconds, director
 
 Each mounted mapping admits at most eight simultaneous remote operations. Control requests time out after 30 seconds and transfers after 120 seconds. Transient failures in reads, writes, truncation, timestamp updates, flushes, and connection setup receive one retry after a short backoff. FTP discards failed or timed-out sessions before that retry, SFTP rebuilds its session or SSH connection, and WebDAV uses the HTTP client's connection pool. Create, remove, and rename are never replayed after an ambiguous failure because the first request may already have taken effect.
 
+Writes remain synchronous and write-through: GugleFS does not report success while data exists only in a background cache. The reviewed chunking, staged replacement, bounded encrypted spill, and crash-journal design is documented in [WRITE_STRATEGY.md](docs/WRITE_STRATEGY.md), together with the native-platform and protocol tests required before write-back can be enabled.
+
 ## Security boundary
 
 `MappingConfig` stores credential IDs, local SSH/client-certificate private-key paths, pasted-key references, whether SFTP MFA is required, the proxy bypass flag, and approved SSH host-key fingerprints. It does not store passwords, Bearer tokens, private-key passphrases, proxy credentials, pasted private-key contents, or SFTP TOTP codes. Transient authentication material is passed only in the current IPC request and is not written to configuration, logs, or IPC responses.
