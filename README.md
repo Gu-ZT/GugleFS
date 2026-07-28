@@ -1,89 +1,125 @@
 <div align="center">
 
-<img src=".idea/icon.png" style="width: 256px; height: 256px;" alt="Icon">
+<img src="src-tauri/icons/icon.png" width="256" height="256" alt="GugleFS icon">
 
 # GugleFS
 
 </div>
 
-GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端，目标是将 FTP、SFTP（SSH）和 WebDAV 远程路径映射为本地磁盘或挂载目录。
+English | [简体中文](README.zh_CN.md)
 
-- Windows：WinFsp
-- Linux / macOS：FUSE
-- 配置界面：Tauri + TypeScript + Vite
-- 文件系统引擎：Rust
-- 前端包管理器：pnpm
+GugleFS is a cross-platform Tauri desktop client that mounts remote FTP, SFTP, and WebDAV paths as local drives or directories.
 
-> 当前 Windows 版本已打通 FTP/显式 FTPS、SFTP、WebDAV、WinFsp 盘符映射、系统凭据库和启动 2FA。Linux/macOS 系统挂载仍在实现中，进度见 `TODO.md`。
+- Windows: WinFsp 2.1
+- Linux: FUSE3
+- macOS: macFUSE 5
+- Desktop UI: Tauri, TypeScript, and Vite
+- Filesystem engine: Rust
+- Package manager: pnpm
 
-## 目录结构
+Windows, Linux, and macOS share the same remote protocol adapters, system proxy support, secure credential storage, startup 2FA, tray behavior, mount recovery, metadata cache, and sequential read-ahead.
+
+## Repository layout
 
 ```text
 GugleFS/
-├─ src/                     # 仅负责配置窗口
-├─ src-tauri/               # Tauri 入口与 IPC 命令
-├─ crates/
-│  ├─ guglefs-core/         # 配置模型、状态和引擎抽象
-│  ├─ guglefs-remote/       # FTP / SFTP / WebDAV 适配器
-│  └─ guglefs-mount/        # WinFsp / FUSE 平台驱动
-├─ Cargo.toml               # Rust workspace
-├─ package.json             # pnpm 命令
-└─ TODO.md
+|- src/                     # Configuration UI only
+|- src-tauri/               # Tauri entry point and IPC commands
+|- crates/
+|  |- guglefs-core/         # Models, state, VFS, and engine traits
+|  |- guglefs-remote/       # FTP, SFTP, and WebDAV adapters
+|  `- guglefs-mount/        # WinFsp and FUSE drivers
+|- THIRD_PARTY_LICENSES/    # Redistributed dependency licenses
+|- Cargo.toml               # Rust workspace
+|- package.json             # pnpm scripts
+`- TODO.md
 ```
 
-依赖方向固定为：`配置窗口 -> Tauri IPC -> core <- remote / mount`。前端不直接处理网络请求或文件系统操作。
+The dependency direction is `UI -> Tauri IPC -> core <- remote / mount`. The frontend never performs remote network requests or filesystem operations directly.
 
-## 开发
+## Development
 
-需要 Node.js 20+、pnpm 10+、Rust 1.85.1+，并安装 Tauri 对应平台的系统依赖。
+Install Node.js 20+, pnpm 10+, Rust 1.85.1+, and the Tauri prerequisites for your platform.
 
-Windows 开发环境还需要：
+Windows additionally requires Visual Studio Build Tools 2022 with Desktop development with C++, a Windows 10/11 SDK, WebView2, and the WinFsp 2.1 SDK.
 
-- Visual Studio Build Tools 2022
-- `Desktop development with C++` 工作负载及 Windows 10/11 SDK
-- WebView2（现代 Windows 通常已经包含）
+On Debian or Ubuntu:
 
-安装后请重新打开终端，确认 `cargo` 和 MSVC 的 `link.exe` 可用。Windows 源码构建还需安装 WinFsp 2.1 SDK；发布安装包会自动安装运行时。
+```bash
+sudo apt install fuse3 libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev libxdo-dev libdbus-1-dev pkg-config
+```
+
+On macOS:
+
+```bash
+brew install --cask macfuse
+brew install pkgconf
+```
+
+Install dependencies and start the app:
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-仅检查前端和 Rust workspace：
+Run the frontend and Rust workspace checks:
 
 ```bash
 pnpm check
 ```
 
-### Windows mount runtime
+## Mount runtimes
 
-发布的 Windows NSIS 安装包会自动安装 [WinFsp 2.1](https://github.com/winfsp/winfsp/releases) 运行时。开发环境构建仍需安装 WinFsp 2.1 SDK。GugleFS 会在挂载时加载 WinFsp，挂载点可以是 `Z:` 这样的盘符，也可以是已存在的绝对目录。FTP 默认使用被动模式，支持标准 FTP 和显式 FTPS；不支持已弃用的隐式 FTPS。
+The Windows NSIS package includes and silently installs the official [WinFsp 2.1](https://github.com/winfsp/winfsp/releases) runtime. Mount points may be drive letters such as `Z:` or absolute directories. WinFsp creates directory mount points itself, so GugleFS temporarily removes an existing empty directory and restores it after a normal unmount. Non-empty directories are rejected, and stale WinFsp directory reparse points are recovered conservatively.
 
-SFTP 支持密码认证，以及 OpenSSH/PEM 私钥认证。私钥可以选择本地文件，也可以直接粘贴；本地文件模式只保存路径，粘贴模式会将私钥分块保存到 Windows Credential Manager。加密私钥的口令可以单独保存。首次连接会显示服务器 SHA-256 主机密钥指纹，确认后固定到映射配置；后续密钥变化必须重新确认。
+Linux uses FUSE3 and absolute directory mount points. The DEB package declares `fuse3` and `libsecret-1-0` dependencies.
 
-首次启动会引导使用身份验证器注册 TOTP 2FA，之后每次启动都必须输入 6 位验证码。FTP/FTPS、SFTP 和 WebDAV 的密码或私钥口令可保存到 Windows Credential Manager；应用配置和挂载恢复状态只保存凭据引用和映射 ID，不保存明文密码或粘贴的私钥内容。
+The macOS App and DMG contain the unmodified official macFUSE 5.3.3 installer. When macFUSE is missing, GugleFS shows an action that opens the bundled installer. macOS still requires the user to authorize installation with administrator privileges and approve the system extension in Privacy & Security. GugleFS never installs or approves the extension automatically.
 
-点击“锁定”会先安全卸载当前所有映射，再进入 2FA 锁屏。解锁或重启后，GugleFS 会自动恢复上次仍处于挂载状态且已保存凭据的映射；用户主动点击“卸载”后，该映射不会在下次解锁时恢复（启用了 `auto_mount` 的配置除外）。
+The macFUSE binary license permits redistribution with non-commercial software. Bundling it with commercial software, including automated download or installation, requires prior written permission from the copyright holder. GugleFS pins the official installer SHA-256 and includes the [complete macFUSE license](THIRD_PARTY_LICENSES/macFUSE-LICENSE.txt) in the repository and application bundle.
 
-### 托盘与退出
+## Remote protocols
 
-关闭主窗口会将 GugleFS 隐藏到系统托盘，现有映射继续运行。双击托盘图标或选择“打开 GugleFS”可以恢复并聚焦主窗口；右键选择“退出”会先停止本进程创建的全部 WinFsp 文件系统，再退出应用。GugleFS 只允许一个实例运行，重复启动会唤醒现有窗口，避免多个进程同时抢占同一盘符。强制结束进程或系统崩溃不属于安全退出流程。
+FTP uses passive mode and supports standard FTP and explicit FTPS. Deprecated implicit FTPS is not supported. When a proxy is active, both control and passive data connections use it.
 
-### 远程访问性能
+SFTP supports passwords and OpenSSH/PEM private keys. The file picker accepts keys with any filename, including extensionless `id_ed25519` and `id_rsa` files generated by `ssh-keygen`. Local-key mode stores only the path. Pasted keys and optional passphrases are stored in the platform secure store. The first connection displays the server's SHA-256 host-key fingerprint; subsequent key changes require explicit confirmation.
 
-共享 VFS 层对 FTP、SFTP 和 WebDAV 启用了有界短期缓存：元数据缓存 3 秒、目录缓存 2 秒、未找到结果缓存 1 秒，最多保留 4096 项。每个打开文件还会进行 1 MiB 顺序预读，以减少 Windows 文件浏览和连续读取产生的远端往返；创建、写入、截断、重命名和删除会更新或失效相关缓存，跨句柄写入也会使旧预读数据失效。
+WebDAV requires HTTPS and keeps redirects on the original origin.
 
-开发真实挂载功能前，Linux 需要 FUSE3 开发包；macOS 需要 macFUSE。
+## System proxies
 
-## 安全边界
+Mappings use the system proxy by default. Enable `Ignore system proxy` on a mapping to force direct connections.
 
-`MappingConfig` 只保存凭据 ID、本地私钥路径、粘贴私钥引用和已确认的 SSH 主机指纹，不保存密码、私钥口令或粘贴私钥正文。FTP/FTPS、SFTP、WebDAV 凭据和 TOTP 密钥保存在 Windows Credential Manager；粘贴私钥按唯一 ID 分块保存，以适配单条 Windows 凭据的大小限制。连接测试和挂载中的认证材料只通过本次 IPC 请求传递，不会写入配置、日志或 IPC 返回值。macOS Keychain 和 Linux Secret Service 尚未接入。
+Linux and macOS read the protocol-specific `HTTP_PROXY`, `HTTPS_PROXY`, `FTP_PROXY`, `SFTP_PROXY`, and `ALL_PROXY` environment variables, including lowercase variants, and honor `NO_PROXY`. Windows reads `ProxyEnable`, `ProxyServer`, and `ProxyOverride` from the current user's Internet Settings registry key.
 
-映射配置会保存到 Tauri 应用配置目录下的 `mappings.json`，文件包含 `schemaVersion`。用于解锁后恢复的映射 ID 单独保存在 `mount-state.json`，运行时错误和凭据内容不会写入这两个文件。
+WebDAV supports HTTP(S) and SOCKS5 proxies. SFTP, FTP, and FTPS use HTTP CONNECT or SOCKS5 tunnels. Proxy credentials remain in the operating-system proxy configuration and are never copied into `mappings.json`.
 
-## CI 与发布
+## Credentials and startup security
 
-推送到 `main` 后，GitHub Actions 会先在 Windows 安装 WinFsp SDK，执行格式检查、Clippy、Rust 测试和前端生产构建，再创建 `<version>+build.<run_number>` 预发布，并上传内置 WinFsp 运行时的 Windows x64 NSIS 安装文件。发布 GitHub Release 时，同一 workflow 会采用 release tag 作为应用版本并将安装文件附加到该 release。
+On first launch, GugleFS enrolls a TOTP authenticator and requires a six-digit code on subsequent launches. Passwords, private-key passphrases, pasted keys, and the TOTP secret are stored in Windows Credential Manager, macOS Keychain, or Linux Secret Service. Mapping and recovery files contain only credential references and mapping IDs.
 
-当前自动发布仅构建 Windows x64，因为 WinFsp 是现阶段唯一完成的系统挂载驱动。NSIS 安装包会在应用安装完成后静默安装 WinFsp 2.1 运行时，因此用户无需额外下载安装 WinFsp。
+Locking the app safely unmounts active mappings before showing the 2FA screen. After unlock or restart, GugleFS restores mappings that were still mounted and have saved credentials, plus mappings with `auto_mount` enabled. A mapping explicitly unmounted by the user is not restored unless `auto_mount` is enabled.
+
+Closing the main window hides it in the system tray while mounts keep running. Double-clicking the tray icon opens and focuses the main window. The tray Exit command unmounts every filesystem created by the process before exiting. A single-instance guard prevents two GugleFS processes from claiming the same mount point.
+
+## Performance
+
+The shared VFS uses bounded short-lived caches: metadata for 3 seconds, directory listings for 2 seconds, and negative lookups for 1 second, with at most 4096 entries. Open files use 1 MiB sequential read-ahead. Create, write, truncate, rename, and delete operations update or invalidate relevant cache entries, including read-ahead buffers owned by other handles.
+
+## Security boundary
+
+`MappingConfig` stores credential IDs, local private-key paths, pasted-key references, the proxy bypass flag, and approved SSH host-key fingerprints. It does not store passwords, private-key passphrases, proxy credentials, or pasted private-key contents. Authentication material is passed only in the current IPC request and is not written to configuration, logs, or IPC responses.
+
+Configuration is stored in `mappings.json` under the Tauri application configuration directory. Mount recovery IDs are stored separately in `mount-state.json`. Runtime errors and credentials are not persisted in either file.
+
+## CI and releases
+
+Pushes to `main` run formatting, strict Clippy, Rust tests, and the production frontend build on Windows, Ubuntu, and macOS. The release workflow then publishes a `<version>+build.<run_number>` prerelease with:
+
+- Windows x64 NSIS, including WinFsp
+- Linux x64 DEB and AppImage
+- macOS ARM64 App and DMG, including the macFUSE installer and license
+
+macOS signing and notarization use the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` secrets. Signing is enabled only when the repository variable `APPLE_SIGNING_ENABLED=true`; otherwise the workflow produces unsigned artifacts. Windows and Linux signing credentials are not configured yet.

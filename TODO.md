@@ -34,6 +34,7 @@
 - [x] FTP：支持显式 FTPS；明确不支持已弃用的隐式 FTPS
 - [x] FTP：使用被动模式和 MLST/MLSD，并为旧服务器回退解析 `LIST`
 - [x] SFTP：支持密码、本地私钥和粘贴私钥认证
+- [x] SFTP：允许选择 `ssh-keygen` 生成的无扩展名私钥文件
 - [ ] SFTP：支持 SSH Agent
 - [x] SFTP：实现 SHA-256 主机指纹固定和首次连接确认流程
 - [ ] SFTP：支持导入 OpenSSH `known_hosts`
@@ -48,6 +49,7 @@
 - [ ] WebDAV：实现 `LOCK` / `UNLOCK` 或明确无锁服务器的并发写入策略
 - [ ] WebDAV：验证 Nextcloud、ownCloud、Apache mod_dav 和常见云存储兼容性
 - [x] WebDAV：限制跨域重定向时的认证头转发，防止凭据泄漏
+- [x] FTP/FTPS/SFTP/WebDAV：读取 Windows 注册表或 Unix 环境变量中的系统代理，并支持按映射忽略
 - [ ] 抽象连接池，避免每个文件操作重复建立连接
 - [ ] 建立可注入的协议测试服务和集成测试
 
@@ -55,9 +57,11 @@
 
 - [x] Windows：选型并接入 WinFsp Rust bindings
 - [x] Windows：实现盘符/目录挂载、占用检测和安全卸载
+- [x] Windows：恢复空目录挂载点并清理失效的 WinFsp 目录 reparse point
 - [ ] Windows：处理大小写、Windows 文件名限制和文件属性
-- [ ] Linux：接入 FUSE3，完成挂载、卸载和权限映射
-- [ ] macOS：验证 macFUSE API、签名、公证和卸载流程
+- [x] Linux：接入 FUSE3，完成挂载、卸载和基础权限映射
+- [x] macOS：接入 macFUSE 5，完成挂载和安全卸载
+- [ ] macOS：配置签名、公证证书并验证发布产物
 - [x] 应用安全退出时卸载所有由 GugleFS 创建的挂载点
 - [ ] 处理休眠、网络切换和系统关机
 - [ ] 挂载操作移入独立后台任务，向前端推送状态事件
@@ -66,12 +70,13 @@
 
 - [x] 使用 Windows Credential Manager 保存 FTP/FTPS/SFTP/WebDAV 密码和私钥口令，禁止写入配置文件或日志
 - [x] 使用 Windows Credential Manager 分块保存粘贴的 SSH 私钥，本地私钥仅保存路径
+- [x] 使用 macOS Keychain 和 Linux Secret Service 保存凭据、TOTP 密钥和粘贴私钥
 - [x] 使用 TOTP 2FA 保护应用启动和凭据操作
 - [ ] 实现配置迁移、导入与导出（导出不包含凭据）
 - [x] 解锁时恢复 `auto_mount` 及上次仍挂载且已保存凭据的映射
 - [x] 增加 FTP/FTPS/SFTP/WebDAV 连接测试
 - [ ] 增加远程路径选择
-- [ ] 校验重复盘符、重复挂载目录和非法平台路径
+- [x] 校验重复挂载点、平台路径和非空 Unix 挂载目录
 
 ## P2：桌面体验
 
@@ -85,13 +90,15 @@
 
 ## P2：质量与发布
 
-- [ ] CI 覆盖 Linux、macOS 的格式检查、Clippy、测试和前端构建
+- [x] CI 覆盖 Linux、macOS 的格式检查、Clippy、测试和前端构建
 - [x] 增加 Windows `rustfmt`、Clippy、测试和前端静态检查门禁
 - [ ] 使用本地 FTP / SFTP 容器执行协议集成测试
 - [ ] 使用内存后端执行 WinFsp / FUSE 一致性测试
 - [ ] 压测大文件、海量小文件、并发读写和高延迟网络
 - [x] 建立未签名 Windows x64 NSIS 自动打包流程
-- [ ] 建立 Windows 签名、macOS 签名公证和 Linux 打包流程
+- [x] 建立 Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG 打包流程
+- [x] macOS 包内置已校验的官方 macFUSE 安装器和完整再分发许可
+- [ ] 配置 Windows/Linux 签名及 macOS 签名公证凭据
 - [ ] 编写威胁模型，审查凭据、路径穿越、符号链接与日志泄漏风险
 
 ## 首个可用版本验收标准
