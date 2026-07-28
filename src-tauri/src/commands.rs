@@ -226,6 +226,7 @@ pub fn export_mappings(state: State<'_, AppState>, path: PathBuf) -> CommandResu
     ConfigDocument::current(mappings)
         .save_to_path(&path)
         .map_err(|error| error.to_string())?;
+    state.diagnostics.record("config_export", None, "success");
     Ok(exported)
 }
 
@@ -269,10 +270,22 @@ pub fn import_mappings(
             .upsert(config.clone())
             .map_err(|error| error.to_string())?;
     }
+    state.diagnostics.record("config_import", None, "success");
     Ok(ImportMappingsResult {
         mappings: state.manager.list().map_err(|error| error.to_string())?,
         imported: imported.len(),
     })
+}
+
+#[tauri::command]
+pub fn export_diagnostics(state: State<'_, AppState>, path: PathBuf) -> CommandResult<usize> {
+    state.security.require_unlocked()?;
+    let mappings = state.manager.list().map_err(|error| error.to_string())?;
+    let exported = state.diagnostics.export_report(&path, mappings)?;
+    state
+        .diagnostics
+        .record("diagnostics_export", None, "success");
+    Ok(exported)
 }
 
 /// Windows 下返回已被占用的盘符：本地驱动器，以及 GugleFS 当前已挂载或
@@ -323,12 +336,19 @@ pub fn save_mapping(
     private_key: Option<String>,
 ) -> CommandResult<MappingRuntime> {
     state.security.require_unlocked()?;
-    save_mapping_and_credentials(
+    let protocol = config.protocol;
+    let result = save_mapping_and_credentials(
         &state,
         config,
         normalized_secret(password),
         normalized_secret(private_key),
-    )
+    );
+    state.diagnostics.record(
+        "mapping_save",
+        Some(protocol),
+        if result.is_ok() { "success" } else { "failure" },
+    );
+    result
 }
 
 #[tauri::command]
@@ -352,6 +372,9 @@ pub fn delete_mapping(state: State<'_, AppState>, id: String) -> CommandResult<(
     if let Some(key_id) = key_id {
         state.security.delete_mapping_private_key(&key_id)?;
     }
+    state
+        .diagnostics
+        .record("mapping_delete", Some(runtime.config.protocol), "success");
     Ok(())
 }
 
@@ -673,11 +696,20 @@ pub async fn unmount_mapping(
         .mount_driver
         .unmount(&runtime.config.mount_point)
         .await;
+    let protocol = runtime.config.protocol;
     match result {
-        Ok(()) => state
-            .manager
-            .finish_mount(&runtime.config.id, MappingState::Unmounted, None)
-            .map_err(|error| error.to_string()),
+        Ok(()) => {
+            let result = state
+                .manager
+                .finish_mount(&runtime.config.id, MappingState::Unmounted, None)
+                .map_err(|error| error.to_string());
+            state.diagnostics.record(
+                "mapping_unmount",
+                Some(protocol),
+                if result.is_ok() { "success" } else { "failure" },
+            );
+            result
+        }
         Err(error) => {
             if was_remembered {
                 let _ = state.mount_state.remember(&id);
@@ -688,6 +720,9 @@ pub async fn unmount_mapping(
                 MappingState::Mounted,
                 Some(message.clone()),
             );
+            state
+                .diagnostics
+                .record("mapping_unmount", Some(protocol), "failure");
             Err(message)
         }
     }
@@ -863,9 +898,17 @@ async fn mount_by_id(
                         MappingState::Unmounted,
                         Some(error.clone()),
                     );
+                    state.diagnostics.record(
+                        "mapping_mount",
+                        Some(runtime.config.protocol),
+                        "failure",
+                    );
                     return Err(format!("保存挂载恢复状态失败，映射已取消: {error}"));
                 }
             }
+            state
+                .diagnostics
+                .record("mapping_mount", Some(runtime.config.protocol), "success");
             Ok(runtime)
         }
         Err(error) => {
@@ -873,6 +916,9 @@ async fn mount_by_id(
             let _ = state
                 .manager
                 .finish_mount(id, MappingState::Error, Some(message.clone()));
+            state
+                .diagnostics
+                .record("mapping_mount", Some(runtime.config.protocol), "failure");
             Err(message)
         }
     }

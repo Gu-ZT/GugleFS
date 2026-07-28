@@ -155,6 +155,8 @@ Use the **Import** and **Export** actions in the mapping workspace to move porta
 
 The project threat model, security invariants, residual risks, and private reporting route are documented in [SECURITY.md](SECURITY.md).
 
+Sanitized operation events are written as JSONL under the application configuration directory's `logs` folder. Logs rotate at 1 MiB with at most three older files. The **Export diagnostics** action writes a JSON report containing the app/platform version, non-identifying mapping capability/state summaries, and these fixed-field events. Hostnames, usernames, paths, mapping names/IDs, fingerprints, error text, and authentication material are excluded.
+
 ## CI and releases
 
 Pushes to `main` run formatting, strict Clippy, Rust tests, and the production frontend build on Windows, Ubuntu, and macOS. The release workflow then publishes a `<version>+build.<run_number>` prerelease with:

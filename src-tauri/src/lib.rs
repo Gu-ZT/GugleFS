@@ -1,9 +1,11 @@
 mod commands;
+mod diagnostics;
 mod mount_state;
 mod security;
 
 use std::{collections::HashMap, path::PathBuf};
 
+use diagnostics::DiagnosticStore;
 use guglefs_core::MappingManager;
 use guglefs_mount::SystemMountDriver;
 use mount_state::MountStateStore;
@@ -21,6 +23,7 @@ pub struct AppState {
     pub mount_state: MountStateStore,
     pub mount_operations: tokio::sync::Mutex<()>,
     pub remote_browsers: tokio::sync::Mutex<HashMap<String, commands::RemoteBrowserSession>>,
+    pub diagnostics: DiagnosticStore,
     pub security: SecurityManager,
 }
 
@@ -60,6 +63,9 @@ pub fn run() {
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             let mount_state = MountStateStore::load_from_path(config_dir.join("mount-state.json"))
                 .map_err(std::io::Error::other)?;
+            let diagnostics =
+                DiagnosticStore::new(config_dir.join("logs")).map_err(std::io::Error::other)?;
+            diagnostics.record("application_start", None, "success");
             app.manage(AppState {
                 manager,
                 config_path,
@@ -67,6 +73,7 @@ pub fn run() {
                 mount_state,
                 mount_operations: tokio::sync::Mutex::new(()),
                 remote_browsers: tokio::sync::Mutex::new(HashMap::new()),
+                diagnostics,
                 security: SecurityManager::default(),
             });
 
@@ -115,6 +122,7 @@ pub fn run() {
             commands::list_mappings,
             commands::export_mappings,
             commands::import_mappings,
+            commands::export_diagnostics,
             commands::occupied_drive_letters,
             commands::save_mapping,
             commands::delete_mapping,

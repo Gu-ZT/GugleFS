@@ -150,6 +150,8 @@ SFTP 服务器需要 MFA 时，可在映射中勾选“需要 MFA”，并在测
 
 项目的威胁模型、安全不变量、剩余风险和私下报告渠道记录在 [SECURITY.md](SECURITY.md) 中。
 
+脱敏操作事件以 JSONL 写入应用配置目录的 `logs` 文件夹；单个日志达到 1 MiB 后轮转，最多保留三个旧文件。侧边栏“导出诊断”会生成 JSON 报告，包含应用/平台版本、不具标识性的映射能力与状态摘要，以及这些固定字段事件。报告和日志不会包含主机名、用户名、路径、映射名称/ID、主机指纹、错误正文或认证材料。
+
 ## CI 与发布
 
 推送到 `main` 后，GitHub Actions 会在 Windows、Ubuntu 和 macOS 上分别执行格式检查、Clippy、Rust 测试和前端生产构建，再创建 `<version>+build.<run_number>` 预发布。发布产物包括 Windows x64 NSIS、Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG；正式 GitHub Release 会采用 release tag 作为应用版本。

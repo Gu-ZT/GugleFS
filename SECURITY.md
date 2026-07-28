@@ -17,7 +17,7 @@ FTP servers, WebDAV servers, SFTP servers, proxies, directory listings, filename
 | Threat | Current control | Residual risk |
 | --- | --- | --- |
 | Credential disclosure at rest | Passwords, pasted keys, private-key passphrases, and the application TOTP seed use the platform credential store; configuration stores references only | Local private-key mode stores its filesystem path; compromise of the user account or credential store exposes secrets |
-| Credential disclosure over IPC or logs | Secret values are accepted only as command inputs and are not returned or intentionally logged | Crash dumps and third-party libraries remain platform concerns; diagnostics must redact command arguments and URLs |
+| Credential disclosure over IPC or logs | Secret values are accepted only as command inputs and are not returned; fixed-field JSONL logs and diagnostic reports exclude identifying configuration and free-form errors | Crash dumps and third-party libraries remain platform concerns |
 | WebDAV credential forwarding | HTTPS is required and authenticated redirects are restricted to the same origin | A trusted server or local TLS trust-store compromise can still expose credentials |
 | SSH server impersonation | SFTP stores and checks a user-approved SHA-256 host-key fingerprint | First-use confirmation can be accepted incorrectly; `known_hosts` import is not implemented |
 | Path traversal and encoded separators | VFS paths are normalized; WebDAV href parsing rejects encoded separators and cross-origin redirects | Protocol/server-specific filename behavior still needs integration testing |

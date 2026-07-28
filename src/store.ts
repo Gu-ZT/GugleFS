@@ -208,6 +208,11 @@ export const store = reactive({
     await this.refreshOccupiedLetters();
     this.setNotice(`已导入 ${result.imported} 个配置，请重新填写凭据`, "success");
   },
+
+  async exportDiagnostics(path: string): Promise<void> {
+    const events = await invoke<number>("export_diagnostics", { path });
+    this.setNotice(`诊断报告已导出，包含 ${events} 条脱敏事件`, "success");
+  },
 });
 
 export async function initialize(): Promise<void> {

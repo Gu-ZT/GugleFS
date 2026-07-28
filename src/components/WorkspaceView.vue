@@ -14,6 +14,7 @@ const mountDialog = ref<InstanceType<typeof MountDialog> | null>(null);
 const locking = ref(false);
 const installingFuseT = ref(false);
 const transferringConfig = ref(false);
+const exportingDiagnostics = ref(false);
 
 const mappingCount = computed(() => `${store.mappings.length} 个配置`);
 const showFuseTBanner = computed(
@@ -96,6 +97,23 @@ async function exportMappings(): Promise<void> {
     transferringConfig.value = false;
   }
 }
+
+async function exportDiagnostics(): Promise<void> {
+  exportingDiagnostics.value = true;
+  try {
+    const selected = await saveFileDialog({
+      defaultPath: "guglefs-diagnostics.json",
+      filters: [{ name: "GugleFS diagnostics", extensions: ["json"] }],
+    });
+    if (typeof selected === "string") {
+      await store.exportDiagnostics(selected);
+    }
+  } catch (error) {
+    store.setNotice(String(error));
+  } finally {
+    exportingDiagnostics.value = false;
+  }
+}
 </script>
 
 <template>
@@ -132,6 +150,18 @@ async function exportMappings(): Promise<void> {
             <span class="switch-knob" aria-hidden="true"></span>
           </button>
         </div>
+        <button
+          class="sidebar-lock"
+          type="button"
+          :disabled="exportingDiagnostics"
+          @click="exportDiagnostics"
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 2.5h7l3 3v8H3v-11Z" />
+            <path d="M10 2.5v3h3M5.5 9h5M5.5 11.5h3" />
+          </svg>
+          导出诊断
+        </button>
         <button class="sidebar-lock" type="button" :disabled="locking" @click="lock">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
             <rect x="3" y="7" width="10" height="6" rx="1.5" />
