@@ -12,6 +12,7 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 - Added conditional WebDAV writes using ETag/Last-Modified validators, conflict detection, safe offset-zero writes, and nonzero truncation.
 - Added WebDAV Digest, Bearer Token, anonymous, and local PEM client-certificate authentication.
 - Added case-insensitive, case-preserving WinFsp lookup with collision detection, Windows filename validation, and basic attribute projection.
+- Added backend-driven mount lifecycle events, including an explicit unmounting state used by startup recovery and app locking.
 
 ## [0.8.0] - 2026-07-29
 

@@ -31,11 +31,24 @@ impl MappingManager {
             .ok_or_else(|| EngineError::MappingNotFound(id.into()))?;
         if matches!(
             runtime.state,
-            MappingState::Mounting | MappingState::Mounted
+            MappingState::Mounting | MappingState::Mounted | MappingState::Unmounting
         ) {
             return Err(EngineError::AlreadyMounted(id.into()));
         }
         runtime.state = MappingState::Mounting;
+        runtime.last_error = None;
+        Ok(runtime.clone())
+    }
+
+    pub fn begin_unmount(&self, id: &str) -> EngineResult<MappingRuntime> {
+        let mut mappings = self.write()?;
+        let runtime = mappings
+            .get_mut(id)
+            .ok_or_else(|| EngineError::MappingNotFound(id.into()))?;
+        if runtime.state != MappingState::Mounted {
+            return Err(EngineError::NotMounted(id.into()));
+        }
+        runtime.state = MappingState::Unmounting;
         runtime.last_error = None;
         Ok(runtime.clone())
     }
@@ -71,7 +84,7 @@ impl MappingManager {
         if let Some(existing) = mappings.get(&config.id) {
             if matches!(
                 existing.state,
-                MappingState::Mounting | MappingState::Mounted
+                MappingState::Mounting | MappingState::Mounted | MappingState::Unmounting
             ) && existing.config != config
             {
                 return Err(EngineError::AlreadyMounted(config.id));
@@ -83,7 +96,9 @@ impl MappingManager {
             state: mappings
                 .get(&config.id)
                 .map(|item| match item.state {
-                    MappingState::Mounting | MappingState::Mounted => item.state,
+                    MappingState::Mounting | MappingState::Mounted | MappingState::Unmounting => {
+                        item.state
+                    }
                     MappingState::Unmounted | MappingState::Error => MappingState::Unmounted,
                 })
                 .unwrap_or(MappingState::Unmounted),
@@ -100,7 +115,7 @@ impl MappingManager {
             .ok_or_else(|| EngineError::MappingNotFound(id.into()))?;
         if matches!(
             runtime.state,
-            MappingState::Mounting | MappingState::Mounted
+            MappingState::Mounting | MappingState::Mounted | MappingState::Unmounting
         ) {
             return Err(EngineError::AlreadyMounted(id.into()));
         }
@@ -188,6 +203,33 @@ mod tests {
             .unwrap();
         assert_eq!(runtime.state, MappingState::Unmounted);
         assert_eq!(runtime.last_error, None);
+    }
+
+    #[test]
+    fn tracks_unmount_lifecycle_and_rejects_parallel_transitions() {
+        let manager = MappingManager::default();
+        manager.upsert(config("mapping", "Z:")).unwrap();
+        manager.begin_mount("mapping").unwrap();
+        manager
+            .finish_mount("mapping", MappingState::Mounted, None)
+            .unwrap();
+
+        assert_eq!(
+            manager.begin_unmount("mapping").unwrap().state,
+            MappingState::Unmounting
+        );
+        assert!(matches!(
+            manager.begin_mount("mapping"),
+            Err(EngineError::AlreadyMounted(_))
+        ));
+        assert!(matches!(
+            manager.remove("mapping"),
+            Err(EngineError::AlreadyMounted(_))
+        ));
+        assert!(matches!(
+            manager.begin_unmount("mapping"),
+            Err(EngineError::NotMounted(_))
+        ));
     }
 
     #[test]

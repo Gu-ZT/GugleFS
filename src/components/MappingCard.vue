@@ -14,7 +14,9 @@ const emit = defineEmits<{
 const config = computed(() => props.runtime.config);
 const endpoint = computed(() => endpointOf(config.value));
 const credentialStored = computed(() => hasPersistedAuthentication(config.value));
-const busy = computed(() => props.runtime.state === "mounting");
+const busy = computed(
+  () => props.runtime.state === "mounting" || props.runtime.state === "unmounting",
+);
 const locked = computed(() => props.runtime.state !== "unmounted" && props.runtime.state !== "error");
 
 const mountLabel = computed(() => {
@@ -23,6 +25,8 @@ const mountLabel = computed(() => {
       return "卸载";
     case "mounting":
       return "挂载中…";
+    case "unmounting":
+      return "卸载中…";
     default:
       return "挂载";
   }

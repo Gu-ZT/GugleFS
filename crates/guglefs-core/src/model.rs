@@ -223,6 +223,7 @@ pub enum MappingState {
     Unmounted,
     Mounting,
     Mounted,
+    Unmounting,
     Error,
 }
 

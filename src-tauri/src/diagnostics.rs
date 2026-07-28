@@ -210,6 +210,7 @@ fn mapping_summary(runtime: MappingRuntime) -> MappingSummary {
             MappingState::Unmounted => "unmounted",
             MappingState::Mounting => "mounting",
             MappingState::Mounted => "mounted",
+            MappingState::Unmounting => "unmounting",
             MappingState::Error => "error",
         },
         auth: match runtime.config.auth {

@@ -748,7 +748,8 @@ input:disabled {
   border-color: rgba(63, 224, 208, 0.4);
 }
 
-.link-card[data-state="mounting"] .route-line {
+.link-card[data-state="mounting"] .route-line,
+.link-card[data-state="unmounting"] .route-line {
   background: repeating-linear-gradient(
     90deg,
     var(--amber) 0 7px,
@@ -758,7 +759,8 @@ input:disabled {
   animation: route-flow 0.7s linear infinite;
 }
 
-.link-card[data-state="mounting"] .route-signal {
+.link-card[data-state="mounting"] .route-signal,
+.link-card[data-state="unmounting"] .route-signal {
   opacity: 1;
   background: var(--amber);
   box-shadow: 0 0 10px rgba(240, 180, 92, 0.7);
@@ -832,12 +834,14 @@ input:disabled {
   background: var(--danger-soft);
 }
 
-.status-pill.status-mounting {
+.status-pill.status-mounting,
+.status-pill.status-unmounting {
   color: var(--amber);
   background: var(--amber-soft);
 }
 
-.status-pill.status-mounting::before {
+.status-pill.status-mounting::before,
+.status-pill.status-unmounting::before {
   animation: pulse 1s ease-in-out infinite;
 }
 
@@ -1296,13 +1300,17 @@ input.input-error:focus-visible {
   }
 
   .link-card[data-state="mounting"] .route-line,
+  .link-card[data-state="unmounting"] .route-line,
   .link-card[data-state="mounting"] .route-signal,
+  .link-card[data-state="unmounting"] .route-signal,
   .status-pill.status-mounting::before,
+  .status-pill.status-unmounting::before,
   .boot-signal {
     animation: none;
   }
 
-  .link-card[data-state="mounting"] .route-signal {
+  .link-card[data-state="mounting"] .route-signal,
+  .link-card[data-state="unmounting"] .route-signal {
     left: 50%;
     opacity: 1;
   }

@@ -145,6 +145,8 @@ On first launch, GugleFS enrolls a TOTP authenticator and requires a six-digit c
 
 Locking the app safely unmounts active mappings before showing the 2FA screen. After unlock or restart, GugleFS restores mappings that were still mounted and have saved credentials, plus mappings with `auto_mount` enabled. A mapping explicitly unmounted by the user is not restored unless `auto_mount` is enabled. SFTP mappings that require MFA are always excluded from automatic restoration.
 
+Mount and unmount commands run on Tauri's async runtime and serialize driver transitions in the backend. Every `mounting`, `unmounting`, `mounted`, `unmounted`, or `error` transition is emitted to the frontend, so manual actions, startup recovery, and lock-triggered unmounting share one live state source. These tasks remain attached to the application lifecycle so tray Exit can still stop every filesystem before the process exits.
+
 Closing the main window hides it in the system tray while mounts keep running. Double-clicking the tray icon opens and focuses the main window. The tray Exit command unmounts every filesystem created by the process before exiting. A single-instance guard prevents two GugleFS processes from claiming the same mount point.
 
 ## Performance

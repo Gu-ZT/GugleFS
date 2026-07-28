@@ -1,5 +1,6 @@
 import { reactive } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import type {
   AuthStatus,
@@ -14,6 +15,15 @@ export type AuthPhase = "loading" | "setup" | "unlock" | "workspace";
 export interface Notice {
   message: string;
   kind: "error" | "success";
+}
+
+let mappingRuntimeListener: Promise<UnlistenFn> | null = null;
+
+async function initializeMappingRuntimeEvents(): Promise<void> {
+  mappingRuntimeListener ??= listen<MappingRuntime>("mapping-runtime", ({ payload }) => {
+    store.updateMapping(payload);
+  });
+  await mappingRuntimeListener;
 }
 
 export const store = reactive({
@@ -161,10 +171,6 @@ export const store = reactive({
     totpCode: string | null,
     remember: boolean,
   ): Promise<MappingRuntime> {
-    const current = this.mappings.find((item) => item.config.id === id);
-    if (current) {
-      this.updateMapping({ ...current, state: "mounting", lastError: null });
-    }
     try {
       const runtime = await invoke<MappingRuntime>("mount_mapping", {
         id,
@@ -216,6 +222,7 @@ export const store = reactive({
 });
 
 export async function initialize(): Promise<void> {
+  await initializeMappingRuntimeEvents();
   store.platformInfo = await invoke<PlatformInfo>("get_platform_info");
   await store.initializeAuth();
 }

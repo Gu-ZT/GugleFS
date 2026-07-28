@@ -1,5 +1,5 @@
 export type Protocol = "ftp" | "sftp" | "webdav";
-export type MappingState = "unmounted" | "mounting" | "mounted" | "error";
+export type MappingState = "unmounted" | "mounting" | "mounted" | "unmounting" | "error";
 export type WebDavAuthMethod =
   | "basic"
   | "digest"
@@ -108,6 +108,7 @@ export function statusLabel(state: MappingState): string {
     unmounted: "未挂载",
     mounting: "挂载中",
     mounted: "已挂载",
+    unmounting: "卸载中",
     error: "异常",
   }[state];
 }

@@ -1,14 +1,14 @@
 use std::{collections::HashSet, path::PathBuf};
 
 use guglefs_core::{
-    AuthMethod, ConfigDocument, ConnectionSecrets, EngineError, EntryKind, MappingConfig,
-    MappingManager, MappingRuntime, MappingState, MountDriver, Protocol, RemoteFileSystem,
+    AuthMethod, ConfigDocument, ConnectionSecrets, EntryKind, MappingConfig, MappingManager,
+    MappingRuntime, MappingState, MountDriver, Protocol, RemoteFileSystem,
 };
 use guglefs_remote::{
     inspect_host_key, known_host_fingerprints, FtpFileSystem, SftpFileSystem, WebDavFileSystem,
 };
 use serde::Serialize;
-use tauri::{path::BaseDirectory, AppHandle, Manager, State};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager, State};
 
 use crate::{
     security::{AuthStatus, SecurityManager, TotpSetup},
@@ -16,6 +16,11 @@ use crate::{
 };
 
 type CommandResult<T> = Result<T, String>;
+const MAPPING_RUNTIME_EVENT: &str = "mapping-runtime";
+
+fn emit_mapping_runtime(app: &AppHandle, runtime: &MappingRuntime) {
+    let _ = app.emit(MAPPING_RUNTIME_EVENT, runtime);
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,7 +153,7 @@ pub fn unlock_app(state: State<'_, AppState>, code: String) -> CommandResult<Aut
 }
 
 #[tauri::command]
-pub async fn lock_app(state: State<'_, AppState>) -> CommandResult<AuthStatus> {
+pub async fn lock_app(app: AppHandle, state: State<'_, AppState>) -> CommandResult<AuthStatus> {
     state.security.require_unlocked()?;
     let _operation = state.mount_operations.lock().await;
     let mounted: Vec<_> = state
@@ -160,27 +165,34 @@ pub async fn lock_app(state: State<'_, AppState>) -> CommandResult<AuthStatus> {
         .collect();
     let mut failures = Vec::new();
     for runtime in mounted {
+        let unmounting = state
+            .manager
+            .begin_unmount(&runtime.config.id)
+            .map_err(|error| error.to_string())?;
+        emit_mapping_runtime(&app, &unmounting);
         match state
             .mount_driver
             .unmount(&runtime.config.mount_point)
             .await
         {
             Ok(()) => {
-                if let Err(error) =
-                    state
-                        .manager
-                        .finish_mount(&runtime.config.id, MappingState::Unmounted, None)
+                match state
+                    .manager
+                    .finish_mount(&runtime.config.id, MappingState::Unmounted, None)
                 {
-                    failures.push(format!("{}: {error}", runtime.config.name));
+                    Ok(unmounted) => emit_mapping_runtime(&app, &unmounted),
+                    Err(error) => failures.push(format!("{}: {error}", runtime.config.name)),
                 }
             }
             Err(error) => {
                 let message = error.to_string();
-                let _ = state.manager.finish_mount(
+                if let Ok(failed) = state.manager.finish_mount(
                     &runtime.config.id,
                     MappingState::Mounted,
                     Some(message.clone()),
-                );
+                ) {
+                    emit_mapping_runtime(&app, &failed);
+                }
                 failures.push(format!("{}: {message}", runtime.config.name));
             }
         }
@@ -306,7 +318,7 @@ pub fn occupied_drive_letters(state: State<'_, AppState>) -> CommandResult<Vec<S
         for runtime in runtimes {
             if !matches!(
                 runtime.state,
-                MappingState::Mounted | MappingState::Mounting
+                MappingState::Mounted | MappingState::Mounting | MappingState::Unmounting
             ) {
                 continue;
             }
@@ -635,6 +647,7 @@ pub async fn detect_sftp_mfa_requirement(
 
 #[tauri::command]
 pub async fn mount_mapping(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     password: Option<String>,
@@ -652,6 +665,7 @@ pub async fn mount_mapping(
     }
     let remember_after_mount = password.is_none() || remember;
     mount_by_id(
+        &app,
         &state,
         &id,
         password,
@@ -663,6 +677,7 @@ pub async fn mount_mapping(
 
 #[tauri::command]
 pub async fn restore_startup_mappings(
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> CommandResult<StartupMountResult> {
     state.security.require_unlocked()?;
@@ -681,10 +696,20 @@ pub async fn restore_startup_mappings(
 
     let attempted = mapping_ids.len();
     for id in mapping_ids {
-        if let Err(message) = mount_by_id(&state, &id, None, None, true).await {
-            let _ = state
+        if let Err(message) = mount_by_id(&app, &state, &id, None, None, true).await {
+            let error_was_emitted = state
                 .manager
-                .finish_mount(&id, MappingState::Error, Some(message));
+                .get(&id)
+                .is_ok_and(|runtime| runtime.state == MappingState::Error);
+            if !error_was_emitted {
+                if let Ok(failed) =
+                    state
+                        .manager
+                        .finish_mount(&id, MappingState::Error, Some(message))
+                {
+                    emit_mapping_runtime(&app, &failed);
+                }
+            }
         }
     }
     Ok(StartupMountResult {
@@ -695,19 +720,30 @@ pub async fn restore_startup_mappings(
 
 #[tauri::command]
 pub async fn unmount_mapping(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
 ) -> CommandResult<MappingRuntime> {
     state.security.require_unlocked()?;
     let _operation = state.mount_operations.lock().await;
-    let runtime = state.manager.get(&id).map_err(|error| error.to_string())?;
-    if runtime.state != MappingState::Mounted {
-        return Err(EngineError::NotMounted(id).to_string());
-    }
+    let runtime = state
+        .manager
+        .begin_unmount(&id)
+        .map_err(|error| error.to_string())?;
+    emit_mapping_runtime(&app, &runtime);
 
     let was_remembered = state.mount_state.contains(&id)?;
     if was_remembered {
-        state.mount_state.forget(&id)?;
+        if let Err(error) = state.mount_state.forget(&id) {
+            if let Ok(failed) = state.manager.finish_mount(
+                &runtime.config.id,
+                MappingState::Mounted,
+                Some(error.clone()),
+            ) {
+                emit_mapping_runtime(&app, &failed);
+            }
+            return Err(error);
+        }
     }
     let result = state
         .mount_driver
@@ -720,6 +756,9 @@ pub async fn unmount_mapping(
                 .manager
                 .finish_mount(&runtime.config.id, MappingState::Unmounted, None)
                 .map_err(|error| error.to_string());
+            if let Ok(unmounted) = &result {
+                emit_mapping_runtime(&app, unmounted);
+            }
             state.diagnostics.record(
                 "mapping_unmount",
                 Some(protocol),
@@ -732,11 +771,13 @@ pub async fn unmount_mapping(
                 let _ = state.mount_state.remember(&id);
             }
             let message = error.to_string();
-            let _ = state.manager.finish_mount(
+            if let Ok(failed) = state.manager.finish_mount(
                 &runtime.config.id,
                 MappingState::Mounted,
                 Some(message.clone()),
-            );
+            ) {
+                emit_mapping_runtime(&app, &failed);
+            }
             state
                 .diagnostics
                 .record("mapping_unmount", Some(protocol), "failure");
@@ -884,6 +925,7 @@ fn save_mapping_and_credentials(
 }
 
 async fn mount_by_id(
+    app: &AppHandle,
     state: &AppState,
     id: &str,
     supplied_password: Option<String>,
@@ -902,6 +944,7 @@ async fn mount_by_id(
         .manager
         .begin_mount(id)
         .map_err(|error| error.to_string())?;
+    emit_mapping_runtime(app, &runtime);
     let result = state.mount_driver.mount(&runtime.config, secrets).await;
     match result {
         Ok(()) => {
@@ -909,17 +952,20 @@ async fn mount_by_id(
                 .manager
                 .finish_mount(id, MappingState::Mounted, None)
                 .map_err(|error| error.to_string())?;
+            emit_mapping_runtime(app, &runtime);
             if remember_after_mount && has_persisted_authentication(&runtime.config) {
                 if let Err(error) = state.mount_state.remember(id) {
                     let _ = state
                         .mount_driver
                         .unmount(&runtime.config.mount_point)
                         .await;
-                    let _ = state.manager.finish_mount(
-                        id,
-                        MappingState::Unmounted,
-                        Some(error.clone()),
-                    );
+                    if let Ok(unmounted) =
+                        state
+                            .manager
+                            .finish_mount(id, MappingState::Unmounted, Some(error.clone()))
+                    {
+                        emit_mapping_runtime(app, &unmounted);
+                    }
                     state.diagnostics.record(
                         "mapping_mount",
                         Some(runtime.config.protocol),
@@ -935,9 +981,13 @@ async fn mount_by_id(
         }
         Err(error) => {
             let message = error.to_string();
-            let _ = state
-                .manager
-                .finish_mount(id, MappingState::Error, Some(message.clone()));
+            if let Ok(failed) =
+                state
+                    .manager
+                    .finish_mount(id, MappingState::Error, Some(message.clone()))
+            {
+                emit_mapping_runtime(app, &failed);
+            }
             state
                 .diagnostics
                 .record("mapping_mount", Some(runtime.config.protocol), "failure");
@@ -1027,7 +1077,7 @@ fn should_restore_startup_mapping(runtime: &MappingRuntime, was_remembered: bool
         && (runtime.config.auto_mount || restore_previous)
         && !matches!(
             runtime.state,
-            MappingState::Mounted | MappingState::Mounting
+            MappingState::Mounted | MappingState::Mounting | MappingState::Unmounting
         )
 }
 
