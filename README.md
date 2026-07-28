@@ -179,7 +179,7 @@ Sanitized operation events are written as JSONL under the application configurat
 
 Pushes to `main` run formatting, strict Clippy, Rust tests, and the production frontend build on Windows, Ubuntu, and macOS. A separate Ubuntu gate starts isolated Pure-FTPd and OpenSSH/SFTP containers with explicit startup profiles that permit the full filesystem mutation surface, waits for their published ports, and uses dedicated non-root test accounts with ephemeral home directories to exercise real connection, directory, create, range read/write, rename, truncate, flush, and removal behavior before packaging can begin. Workflow actions use Node 24-compatible runtimes while GugleFS builds remain pinned to Node 22. The release workflow then publishes a `<version>+build.<run_number>` prerelease with:
 
-The current source release line is `0.10.0`; the matching user-visible changes are tracked in [CHANGES.md](CHANGES.md) and [CHANGES.zh_CN.md](CHANGES.zh_CN.md).
+The current source release line is `0.11.0`; the matching user-visible changes are tracked in [CHANGES.md](CHANGES.md) and [CHANGES.zh_CN.md](CHANGES.zh_CN.md).
 
 - Windows x64 NSIS, including WinFsp
 - Linux x64 DEB and AppImage

@@ -4,8 +4,12 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-29
+
 - Added complete English and Simplified Chinese interface resources, including the native tray menu, with system-language detection and a persisted language switch.
-- Added real FTP and SFTP container integration coverage and support for Pure-FTPd MLST/MLSD responses with four-digit UNIX mode facts.
+- Added real FTP and SFTP container integration coverage for connection, directory, create, range read/write, rename, truncate, flush, and removal behavior.
+- Added support for Pure-FTPd MLST/MLSD responses with four-digit UNIX mode facts.
+- Documented the synchronous write-through contract and the implementation gates for chunking, staged replacement, bounded spill, and crash recovery.
 
 ## [0.10.0] - 2026-07-29
 

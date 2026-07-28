@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "GugleFS",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "identifier": "dev.guglefs.desktop",
   "build": {
     "beforeDevCommand": "node node_modules/vite/bin/vite.js --host 127.0.0.1",
