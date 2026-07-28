@@ -6,7 +6,7 @@ use guglefs_core::{
     MappingConfig, Protocol, RemoteFileSystem,
 };
 use suppaftp::{
-    list::{File, ListParser},
+    list::File,
     tokio::{
         AsyncFtpStream, AsyncNativeTlsConnector, AsyncNativeTlsFtpStream, ImplAsyncFtpStream,
         TokioTlsStream,
@@ -22,6 +22,11 @@ const FTP_CONTROL_TIMEOUT: Duration = Duration::from_secs(25);
 const FTP_TRANSFER_TIMEOUT: Duration = Duration::from_secs(110);
 
 type FtpOperation<'a, T> = Pin<Box<dyn Future<Output = EngineResult<T>> + Send + 'a>>;
+
+struct FtpEntry {
+    name: String,
+    metadata: FileMetadata,
+}
 
 enum FtpConnection {
     Plain(AsyncFtpStream),
@@ -151,7 +156,7 @@ impl FtpConnection {
         }
     }
 
-    async fn list_entries(&mut self, path: &str) -> EngineResult<Vec<File>> {
+    async fn list_entries(&mut self, path: &str) -> EngineResult<Vec<FtpEntry>> {
         match self.mlsd(path).await {
             Ok(lines) => lines
                 .into_iter()
@@ -160,7 +165,7 @@ impl FtpConnection {
                     !line.contains("type=cdir") && !line.contains("type=pdir")
                 })
                 .map(|line| {
-                    ListParser::parse_mlsd(&line).map_err(|error| {
+                    parse_mlsd_entry(&line).map_err(|error| {
                         EngineError::Remote(format!("parse FTP MLSD entry for {path}: {error}"))
                     })
                 })
@@ -172,9 +177,14 @@ impl FtpConnection {
                 .into_iter()
                 .filter(|line| !line.trim().is_empty() && !line.starts_with("total "))
                 .map(|line| {
-                    File::try_from(line.as_str()).map_err(|error| {
-                        EngineError::Remote(format!("parse FTP LIST entry for {path}: {error}"))
-                    })
+                    File::try_from(line.as_str())
+                        .map(|file| FtpEntry {
+                            name: file.name().to_string(),
+                            metadata: file_metadata(file),
+                        })
+                        .map_err(|error| {
+                            EngineError::Remote(format!("parse FTP LIST entry for {path}: {error}"))
+                        })
                 })
                 .collect(),
         }
@@ -190,8 +200,8 @@ impl FtpConnection {
         self.list_entries(parent)
             .await?
             .into_iter()
-            .find(|entry| entry.name() == name)
-            .map(file_metadata)
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.metadata)
             .ok_or_else(|| {
                 EngineError::filesystem(FsErrorCode::NotFound, format!("FTP path: {path}"))
             })
@@ -449,9 +459,9 @@ impl RemoteFileSystem for FtpFileSystem {
             .await?;
         Ok(entries
             .into_iter()
-            .filter(|entry| entry.name() != "." && entry.name() != "..")
+            .filter(|entry| entry.name != "." && entry.name != "..")
             .map(|entry| {
-                let name = entry.name().to_string();
+                let name = entry.name;
                 let entry_path = if path == "/" {
                     format!("/{name}")
                 } else {
@@ -460,7 +470,7 @@ impl RemoteFileSystem for FtpFileSystem {
                 DirectoryEntry {
                     path: entry_path,
                     name,
-                    metadata: file_metadata(entry),
+                    metadata: entry.metadata,
                 }
             })
             .collect())
@@ -649,6 +659,21 @@ fn parse_mlst_metadata(line: &str) -> Result<FileMetadata, &'static str> {
     })
 }
 
+fn parse_mlsd_entry(line: &str) -> Result<FtpEntry, &'static str> {
+    let line = line.trim_start();
+    let name_start = line
+        .find(|character: char| character.is_whitespace())
+        .ok_or("missing path name")?;
+    let name = line[name_start..].trim_start();
+    if name.is_empty() {
+        return Err("missing path name");
+    }
+    Ok(FtpEntry {
+        name: name.to_string(),
+        metadata: parse_mlst_metadata(&line[..name_start])?,
+    })
+}
+
 fn ftp_error(operation: &str, error: suppaftp::FtpError) -> EngineError {
     EngineError::Remote(format!("FTP {operation}: {error}"))
 }
@@ -669,22 +694,21 @@ mod tests {
 
     #[test]
     fn parses_machine_readable_ftp_entries() {
-        let file = ListParser::parse_mlsd(
-            "modify=20240102030405;size=12;type=file;unique=abc; readme.txt",
-        )
-        .unwrap();
-        assert_eq!(file.name(), "readme.txt");
-        assert_eq!(file_metadata(file).size, 12);
+        let file =
+            parse_mlsd_entry("modify=20240102030405;size=12;type=file;unique=abc; readme.txt")
+                .unwrap();
+        assert_eq!(file.name, "readme.txt");
+        assert_eq!(file.metadata.size, 12);
 
-        let directory = ListParser::parse_mlsd("modify=20240102030405;type=dir; docs").unwrap();
-        assert_eq!(file_metadata(directory).kind, EntryKind::Directory);
+        let directory = parse_mlsd_entry("modify=20240102030405;type=dir; docs").unwrap();
+        assert_eq!(directory.metadata.kind, EntryKind::Directory);
 
-        let pure_ftpd = parse_mlst_metadata(
+        let pure_ftpd = parse_mlsd_entry(
             "type=file;size=12;modify=20240102030405;UNIX.mode=0644;UNIX.uid=1000; readme.txt",
         )
         .unwrap();
-        assert_eq!(pure_ftpd.kind, EntryKind::File);
-        assert_eq!(pure_ftpd.size, 12);
+        assert_eq!(pure_ftpd.metadata.kind, EntryKind::File);
+        assert_eq!(pure_ftpd.metadata.size, 12);
     }
 
     #[test]

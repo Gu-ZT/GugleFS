@@ -118,7 +118,7 @@ Linux 使用 FUSE3，挂载点是绝对目录；DEB 包声明 `fuse3` 和 `libse
 
 FUSE-T 二进制许可允许非商业用途再分发；商业使用或随商业软件捆绑需要从 FUSE-T 作者处取得商业许可。GugleFS 分发未经修改的官方 PKG，固定 SHA-256，并随包附带[FUSE-T 许可条款](THIRD_PARTY_LICENSES/FUSE-T-LICENSE.txt)和[第三方归属声明](THIRD_PARTY_LICENSES/FUSE-T-ATTRIBUTIONS.txt)。
 
-FTP 默认使用被动模式，支持标准 FTP 和显式 FTPS；不支持已弃用的隐式 FTPS。Pure-FTPd 的 MLST 扩展（包括四位 `UNIX.mode` fact）不会再导致其他有效元数据被判为格式错误。
+FTP 默认使用被动模式，支持标准 FTP 和显式 FTPS；不支持已弃用的隐式 FTPS。Pure-FTPd 的 MLST/MLSD 扩展（包括四位 `UNIX.mode` fact）不会再导致其他有效元数据被判为格式错误。
 
 SFTP 支持密码、OpenSSH/PEM 私钥和 SSH Agent 认证。Unix 通过 `SSH_AUTH_SOCK` 连接 Agent；Windows 会依次尝试配置的 Agent 管道、标准 OpenSSH Agent 管道和 Pageant。私钥文件不限制扩展名，可直接选择 `ssh-keygen` 生成的 `id_ed25519`、`id_rsa` 等文件；也可以粘贴私钥。文件模式只保存路径，粘贴模式会将私钥分块保存到当前平台的安全凭据库。加密私钥的口令可以单独保存。
 
