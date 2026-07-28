@@ -1,19 +1,21 @@
 :root {
-  --bg: #f4f6f5;
+  --bg: #f1f4f8;
   --surface: #ffffff;
-  --surface-muted: #f6f8f7;
-  --border: #e3e8e6;
-  --border-strong: #ccd5d2;
-  --text: #1a2220;
-  --text-secondary: #5d6b67;
-  --text-faint: #93a19c;
+  --surface-muted: #f5f8fb;
+  --border: #e2e8f0;
+  --border-strong: #c9d5e3;
+  --text: #15202e;
+  --text-secondary: #54667c;
+  --text-faint: #8ba0b6;
 
-  --accent: #0e7a5f;
-  --accent-hover: #0b654f;
-  --accent-soft: #e2f1ec;
-  --accent-soft-border: #bedfd3;
+  --accent: #2f7cf6;
+  --accent-hover: #1d68e2;
+  --accent-soft: #e7f0fe;
+  --accent-soft-border: #c2d9fb;
+  --accent-glow: rgba(47, 124, 246, 0.35);
+  --cyan: #38c6e8;
 
-  --danger: #c0443a;
+  --danger: #cf443c;
   --danger-soft: #fdeeed;
   --danger-border: #eec6c2;
 
@@ -21,16 +23,16 @@
   --warning-text: #7a5b13;
   --warning-border: #ecd9a4;
 
-  --sidebar-bg: #111d1a;
-  --sidebar-text: #8fa69f;
+  --sidebar-bg: #0a1220;
+  --sidebar-text: #7e94b4;
 
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
 
-  --shadow-sm: 0 1px 2px rgba(20, 30, 27, 0.05);
-  --shadow-md: 0 6px 20px rgba(20, 30, 27, 0.08);
-  --shadow-lg: 0 24px 64px rgba(20, 30, 27, 0.2);
+  --shadow-sm: 0 1px 2px rgba(15, 27, 45, 0.05);
+  --shadow-md: 0 6px 20px rgba(15, 27, 45, 0.09);
+  --shadow-lg: 0 24px 64px rgba(10, 18, 32, 0.35);
 
   --font-mono: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
 
@@ -75,7 +77,7 @@ select:focus-visible,
 textarea:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(14, 122, 95, 0.18);
+  box-shadow: 0 0 0 3px rgba(47, 124, 246, 0.18);
 }
 
 h1,
@@ -95,17 +97,12 @@ p {
 }
 
 .logo-mark {
-  display: grid;
   flex: 0 0 auto;
   width: 38px;
   height: 38px;
-  place-items: center;
-  color: #fff;
-  background: linear-gradient(135deg, #12a37e, #0b6b52);
-  border-radius: 11px;
-  font-size: 19px;
-  font-weight: 800;
-  box-shadow: 0 4px 12px rgba(14, 122, 95, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  object-fit: cover;
+  border-radius: 10px;
+  box-shadow: 0 4px 14px var(--accent-glow), 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
 
 /* ---------- Buttons ---------- */
@@ -134,7 +131,7 @@ p {
 .primary:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
-  box-shadow: 0 4px 14px rgba(14, 122, 95, 0.32);
+  box-shadow: 0 4px 14px var(--accent-glow);
 }
 
 .secondary {
@@ -145,7 +142,7 @@ p {
 
 .secondary:hover:not(:disabled) {
   background: var(--surface-muted);
-  border-color: #b4c1bd;
+  border-color: #aebfd2;
 }
 
 .danger {
@@ -224,9 +221,9 @@ input:disabled {
   padding: 40px 20px;
   place-items: center;
   background:
-    radial-gradient(900px 420px at 15% 0%, rgba(18, 163, 126, 0.16), transparent 65%),
-    radial-gradient(800px 420px at 90% 100%, rgba(14, 122, 95, 0.12), transparent 65%),
-    linear-gradient(160deg, #101c19 0%, #16241f 55%, #101c19 100%);
+    radial-gradient(900px 420px at 15% 0%, rgba(56, 150, 246, 0.22), transparent 65%),
+    radial-gradient(800px 420px at 90% 100%, rgba(56, 198, 232, 0.14), transparent 65%),
+    linear-gradient(160deg, #0a1220 0%, #0e1a30 55%, #0a1220 100%);
 }
 
 .auth-content {
@@ -240,8 +237,14 @@ input:disabled {
   justify-content: center;
 }
 
+.auth-logo .logo-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+}
+
 .auth-logo h1 {
-  color: #f0f6f3;
+  color: #eef3fa;
   font-size: 26px;
   font-weight: 750;
   letter-spacing: -0.01em;
@@ -249,7 +252,7 @@ input:disabled {
 
 .auth-tagline {
   margin-top: 10px;
-  color: #7d968e;
+  color: #6d86a5;
   font-size: 13px;
   text-align: center;
 }
@@ -294,7 +297,7 @@ input:disabled {
 
 .auth-footnote {
   margin-top: 22px;
-  color: #5f756d;
+  color: #576d8a;
   font-size: 11px;
   text-align: center;
 }
@@ -349,7 +352,7 @@ input:disabled {
 }
 
 .code-input::placeholder {
-  color: #cfd8d5;
+  color: #ccd8e4;
   letter-spacing: 0.4em;
 }
 
@@ -372,7 +375,7 @@ input:disabled {
   flex-direction: column;
   padding: 22px 14px 16px;
   color: var(--sidebar-text);
-  background: linear-gradient(180deg, #122019 0%, var(--sidebar-bg) 40%, #0e1815 100%);
+  background: linear-gradient(180deg, #101d36 0%, var(--sidebar-bg) 40%, #080f1b 100%);
 }
 
 .sidebar-brand {
@@ -383,7 +386,7 @@ input:disabled {
 }
 
 .sidebar-brand h1 {
-  color: #eef4f1;
+  color: #edf2fa;
   font-size: 17px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -392,7 +395,7 @@ input:disabled {
 .sidebar-brand p {
   margin-top: 1px;
   font-size: 10px;
-  color: #637a72;
+  color: #5b7293;
 }
 
 .sidebar-nav {
@@ -413,8 +416,8 @@ input:disabled {
 
 .nav-item.active {
   color: #fff;
-  background: rgba(18, 163, 126, 0.18);
-  box-shadow: inset 0 0 0 1px rgba(18, 163, 126, 0.3);
+  background: rgba(56, 150, 246, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(56, 150, 246, 0.32);
 }
 
 .sidebar-footer {
@@ -587,9 +590,9 @@ input:disabled {
 }
 
 .protocol-badge[data-protocol="webdav"] {
-  color: #1d5fb8;
-  background: #e4edfa;
-  border: 1px solid #c2d6f2;
+  color: #6749c8;
+  background: #ede8fb;
+  border: 1px solid #d3c7f5;
 }
 
 .status-pill {
@@ -640,7 +643,7 @@ input:disabled {
 
 .status-pill.status-unmounted {
   color: var(--text-secondary);
-  background: #edf0ef;
+  background: #edf1f5;
 }
 
 .card-meta {
@@ -793,7 +796,7 @@ dialog form {
 }
 
 dialog::backdrop {
-  background: rgba(14, 22, 19, 0.55);
+  background: rgba(8, 14, 25, 0.55);
   backdrop-filter: blur(3px);
 }
 
@@ -850,7 +853,7 @@ textarea {
 input:hover:not(:disabled),
 select:hover:not(:disabled),
 textarea:hover:not(:disabled) {
-  border-color: #adbbb6;
+  border-color: #a9bcd2;
 }
 
 textarea {

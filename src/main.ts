@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import appIconUrl from "./assets/app-icon.png";
 import "./styles.css";
 
 type Protocol = "ftp" | "sftp" | "webdav";
@@ -80,7 +81,7 @@ app.innerHTML = `
   <div id="auth-screen" class="auth-screen">
     <div class="auth-content">
       <div class="auth-logo">
-        <span class="logo-mark">G</span>
+        <img class="logo-mark" src="${appIconUrl}" alt="" />
         <h1>GugleFS</h1>
       </div>
       <p class="auth-tagline">把远程服务器挂载为本地磁盘</p>
@@ -127,7 +128,7 @@ app.innerHTML = `
   <div id="workspace" hidden>
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <span class="logo-mark">G</span>
+        <img class="logo-mark" src="${appIconUrl}" alt="" />
         <div class="brand-text">
           <h1>GugleFS</h1>
           <p>远程文件系统</p>
