@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
+import { t } from "../i18n";
 import { store } from "../store";
 import type { MappingRuntime } from "../types";
 import { hasPersistedAuthentication } from "../types";
@@ -20,7 +21,7 @@ const credentialStored = computed(() =>
 );
 const totpRequired = computed(() => target.value?.config.sftpTotpRequired ?? false);
 const credentialLabel = computed(() =>
-  target.value?.config.auth.type === "private_key" ? "私钥口令" : "密码",
+  t(target.value?.config.auth.type === "private_key" ? "mount.passphrase" : "mount.password"),
 );
 const subtitle = computed(() =>
   target.value ? `${target.value.config.name} → ${target.value.config.mountPoint}` : "",
@@ -83,10 +84,16 @@ defineExpose({ open });
       <div class="dialog-heading">
         <div>
           <p class="eyebrow">Mount</p>
-          <h2 id="mount-dialog-title">挂载映射</h2>
+          <h2 id="mount-dialog-title">{{ t("mount.title") }}</h2>
           <p class="dialog-subtitle">{{ subtitle }}</p>
         </div>
-        <button class="icon-button" type="button" aria-label="关闭" title="关闭" @click="close">
+        <button
+          class="icon-button"
+          type="button"
+          :aria-label="t('dialog.close')"
+          :title="t('dialog.close')"
+          @click="close"
+        >
           ×
         </button>
       </div>
@@ -103,7 +110,7 @@ defineExpose({ open });
           />
         </label>
         <label v-if="totpRequired" class="full-width">
-          <span>当前 TOTP 验证码</span>
+          <span>{{ t("mount.totp") }}</span>
           <input
             ref="totpInput"
             v-model="totpCode"
@@ -115,7 +122,7 @@ defineExpose({ open });
         </label>
         <label v-if="!credentialStored" class="checkbox-row full-width">
           <input v-model="remember" type="checkbox" />
-          <span>保存到{{ store.platformInfo.secureStore }}</span>
+          <span>{{ t("mount.remember", { store: store.platformInfo.secureStore }) }}</span>
         </label>
       </div>
 
@@ -124,9 +131,9 @@ defineExpose({ open });
       </div>
 
       <div class="dialog-actions">
-        <button class="secondary" type="button" @click="close">取消</button>
+        <button class="secondary" type="button" @click="close">{{ t("dialog.cancel") }}</button>
         <button class="primary" type="submit" :disabled="busy">
-          {{ busy ? "挂载中…" : "挂载" }}
+          {{ busy ? t("mapping.mounting") : t("mapping.mount") }}
         </button>
       </div>
     </form>

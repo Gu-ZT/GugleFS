@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { onMounted, ref } from "vue";
 import appIconUrl from "../assets/app-icon.png";
+import { localeLabel, t, toggleLocale } from "../i18n";
 import { store } from "../store";
 import type { TotpSetup } from "../types";
 
@@ -72,17 +73,26 @@ onMounted(async () => {
 
 <template>
   <div class="auth-screen">
+    <button
+      class="language-button auth-language"
+      type="button"
+      :aria-label="t('language.label')"
+      :title="t('language.label')"
+      @click="toggleLocale"
+    >
+      {{ localeLabel }}
+    </button>
     <div class="auth-content">
       <div class="auth-logo">
         <img class="logo-mark" :src="appIconUrl" alt="" />
         <h1>GugleFS</h1>
       </div>
-      <p class="auth-tagline">把远程服务器挂载为本地磁盘</p>
+      <p class="auth-tagline">{{ t("app.tagline") }}</p>
 
       <section class="auth-panel" aria-labelledby="auth-title">
         <div class="auth-heading">
           <p class="eyebrow">Two-Factor Authentication</p>
-          <h2 id="auth-title">{{ mode === "setup" ? "绑定双因素认证" : "验证身份" }}</h2>
+          <h2 id="auth-title">{{ t(mode === "setup" ? "auth.setupTitle" : "auth.unlockTitle") }}</h2>
         </div>
 
         <div v-if="errorMessage" class="notice auth-notice" role="alert">
@@ -96,7 +106,7 @@ onMounted(async () => {
           @submit.prevent="submitUnlock"
         >
           <label>
-            <span>验证码</span>
+            <span>{{ t("auth.code") }}</span>
             <input
               ref="codeInput"
               v-model="code"
@@ -111,27 +121,27 @@ onMounted(async () => {
             />
           </label>
           <button class="primary btn-block" type="submit" :disabled="busy">
-            {{ busy ? "验证中…" : "解锁" }}
+            {{ busy ? t("auth.verifying") : t("auth.unlock") }}
           </button>
         </form>
 
         <div v-else class="setup-layout">
-          <img v-if="qrCode" class="totp-qr" :src="qrCode" alt="GugleFS 2FA 二维码" />
+          <img v-if="qrCode" class="totp-qr" :src="qrCode" :alt="t('auth.qrAlt')" />
           <div v-else class="totp-qr totp-qr-loading" aria-hidden="true"></div>
           <div class="setup-fields">
             <p class="setup-hint">
-              使用 authenticator 应用扫描二维码，然后输入生成的 6 位验证码完成绑定。
+              {{ t("auth.setupHint") }}
             </p>
             <label>
-              <span>密钥</span>
+              <span>{{ t("auth.secret") }}</span>
               <div class="input-action">
                 <input class="secret-input" :value="secret" readonly />
-                <button class="secondary" type="button" @click="copySecret">复制</button>
+                <button class="secondary" type="button" @click="copySecret">{{ t("auth.copy") }}</button>
               </div>
             </label>
             <form class="auth-form setup-form" :aria-busy="busy" @submit.prevent="submitSetup">
               <label>
-                <span>验证码</span>
+                <span>{{ t("auth.code") }}</span>
                 <input
                   ref="codeInput"
                   v-model="code"
@@ -146,14 +156,14 @@ onMounted(async () => {
                 />
               </label>
               <button class="primary btn-block" type="submit" :disabled="busy">
-                {{ busy ? "验证中…" : "启用 2FA" }}
+                {{ busy ? t("auth.verifying") : t("auth.enable") }}
               </button>
             </form>
           </div>
         </div>
       </section>
 
-      <p class="auth-footnote">凭据经系统安全存储加密 · 双因素认证保护</p>
+      <p class="auth-footnote">{{ t("auth.footnote") }}</p>
     </div>
   </div>
 </template>

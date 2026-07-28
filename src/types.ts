@@ -104,16 +104,6 @@ export function hasPersistedAuthentication(config: MappingConfig): boolean {
   }
 }
 
-export function statusLabel(state: MappingState): string {
-  return {
-    unmounted: "未挂载",
-    mounting: "挂载中",
-    mounted: "已挂载",
-    unmounting: "卸载中",
-    error: "异常",
-  }[state];
-}
-
 export function endpointOf(config: MappingConfig): string {
   return `${config.username ? `${config.username}@` : ""}${config.host}:${config.port}${config.remotePath}`;
 }

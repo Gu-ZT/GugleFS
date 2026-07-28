@@ -245,6 +245,7 @@ input:disabled {
 /* ---------- Auth screen ---------- */
 
 .auth-screen {
+  position: relative;
   display: grid;
   min-height: 100vh;
   padding: 40px 20px;
@@ -571,6 +572,27 @@ input:disabled {
   gap: 10px;
   align-items: center;
   justify-content: flex-end;
+}
+
+.auth-language {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+}
+
+.language-button {
+  min-width: 72px;
+  color: var(--ink-faint);
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.language-button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--line-bright);
 }
 
 /* ---------- Runtime banner ---------- */

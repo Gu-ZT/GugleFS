@@ -2,6 +2,7 @@ import { reactive } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { t } from "./i18n";
 import type {
   AuthStatus,
   ImportMappingsResult,
@@ -31,7 +32,7 @@ export const store = reactive({
   platformInfo: {
     os: "windows",
     defaultMountPoint: "Z:",
-    secureStore: "系统凭据库",
+    secureStore: "Secure Store",
     fuseTRequired: false,
     fuseTInstalled: true,
     fuseTInstallerBundled: false,
@@ -116,7 +117,7 @@ export const store = reactive({
   async enterWorkspace(): Promise<void> {
     this.phase = "workspace";
     await this.loadMappings();
-    this.setNotice("正在恢复挂载状态...");
+    this.setNotice(t("notice.restoring"));
     try {
       const result = await invoke<StartupMountResult>("restore_startup_mappings");
       this.mappings = result.mappings;
@@ -126,9 +127,9 @@ export const store = reactive({
       }
       const failed = this.mappings.filter((runtime) => runtime.state === "error");
       if (failed.length > 0) {
-        this.setNotice(`${failed.length} 个映射恢复失败`);
+        this.setNotice(t("notice.restoreFailed", { count: failed.length }));
       } else {
-        this.setNotice(`已恢复 ${result.attempted} 个映射`, "success");
+        this.setNotice(t("notice.restored", { count: result.attempted }), "success");
       }
     } catch (error) {
       this.setNotice(String(error));
@@ -163,7 +164,7 @@ export const store = reactive({
   async deleteMapping(id: string): Promise<void> {
     await invoke("delete_mapping", { id });
     this.mappings = this.mappings.filter((item) => item.config.id !== id);
-    this.setNotice("配置和凭据已删除", "success");
+    this.setNotice(t("notice.deleted"), "success");
   },
 
   async mountMapping(
@@ -180,7 +181,7 @@ export const store = reactive({
         remember,
       });
       this.updateMapping(runtime);
-      this.setNotice("映射已挂载", "success");
+      this.setNotice(t("notice.mounted"), "success");
       return runtime;
     } catch (error) {
       await this.loadMappings();
@@ -192,7 +193,7 @@ export const store = reactive({
     try {
       const runtime = await invoke<MappingRuntime>("unmount_mapping", { id });
       this.updateMapping(runtime);
-      this.setNotice("映射已卸载", "success");
+      this.setNotice(t("notice.unmounted"), "success");
     } catch (error) {
       await this.loadMappings();
       this.setNotice(String(error));
@@ -201,24 +202,24 @@ export const store = reactive({
 
   async installFuseT(): Promise<void> {
     await invoke("open_fuse_t_installer");
-    this.setNotice("已打开 FUSE-T 安装器", "success");
+    this.setNotice(t("notice.fuseInstaller"), "success");
   },
 
   async exportMappings(path: string): Promise<void> {
     const exported = await invoke<number>("export_mappings", { path });
-    this.setNotice(`已导出 ${exported} 个配置，文件不包含凭据`, "success");
+    this.setNotice(t("notice.exported", { count: exported }), "success");
   },
 
   async importMappings(path: string): Promise<void> {
     const result = await invoke<ImportMappingsResult>("import_mappings", { path });
     this.mappings = result.mappings;
     await this.refreshOccupiedLetters();
-    this.setNotice(`已导入 ${result.imported} 个配置，请重新填写凭据`, "success");
+    this.setNotice(t("notice.imported", { count: result.imported }), "success");
   },
 
   async exportDiagnostics(path: string): Promise<void> {
     const events = await invoke<number>("export_diagnostics", { path });
-    this.setNotice(`诊断报告已导出，包含 ${events} 条脱敏事件`, "success");
+    this.setNotice(t("notice.diagnostics", { count: events }), "success");
   },
 });
 

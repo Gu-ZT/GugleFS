@@ -4,6 +4,8 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+- Added complete English and Simplified Chinese interface resources with system-language detection and a persisted language switch.
+
 ## [0.10.0] - 2026-07-29
 
 - Added backend-driven mount lifecycle events, including an explicit unmounting state used by startup recovery and app locking.

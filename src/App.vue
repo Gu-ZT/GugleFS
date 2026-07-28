@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { t } from "./i18n";
 import { initialize, store } from "./store";
 import AuthScreen from "./components/AuthScreen.vue";
 import WorkspaceView from "./components/WorkspaceView.vue";
@@ -19,7 +20,7 @@ onMounted(async () => {
 <template>
   <div v-if="store.phase === 'loading'" class="boot-screen" role="status" aria-live="polite">
     <span class="boot-signal" aria-hidden="true"></span>
-    <p>正在连接本地安全存储…</p>
+    <p>{{ t("app.loadingSecureStore") }}</p>
   </div>
   <AuthScreen
     v-else-if="store.phase === 'setup' || store.phase === 'unlock'"

@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { computed, nextTick, reactive, ref, watch } from "vue";
+import { t } from "../i18n";
 import { store } from "../store";
 import type {
   AuthMethod,
@@ -67,7 +68,7 @@ const mountPointError = computed(() => {
   }
   const match = /^([A-Za-z]):[\\/]?$/.exec(draft.mountPoint.trim());
   if (match && store.occupiedLetters.includes(match[1].toUpperCase())) {
-    return `盘符 ${match[1].toUpperCase()}: 已被占用，请选择其他盘符`;
+    return t("form.driveOccupied", { drive: match[1].toUpperCase() });
   }
   return null;
 });
@@ -102,16 +103,16 @@ const credentialInputVisible = computed(
     !webdavAnonymousAuth.value,
 );
 const credentialLabel = computed(() => {
-  if (privateKeyAuth.value) return "私钥口令";
+  if (privateKeyAuth.value) return t("form.passphrase");
   if (draft.protocol === "webdav" && draft.webdavAuth === "bearer") return "Bearer Token";
-  return "密码";
+  return t("form.password");
 });
 const passwordPlaceholder = computed(() =>
   privateKeyAuth.value
-    ? "可选；留空则保留已保存口令"
+    ? t("form.keepPassphrase")
     : draft.protocol === "webdav" && draft.webdavAuth === "bearer"
-      ? "留空则保留已保存 Token"
-      : "留空则保留已保存密码",
+      ? t("form.keepToken")
+      : t("form.keepPassword"),
 );
 
 function onProtocolChange(): void {
@@ -177,10 +178,13 @@ async function verifySftpHostKey(config: MappingConfig): Promise<void> {
     const changed = trustedHostKeyFingerprint.value !== null;
     const accepted = window.confirm(
       changed
-        ? `SSH 服务器主机密钥已变化。\n\n原指纹：${trustedHostKeyFingerprint.value}\n新指纹：${fingerprint}\n\n只有确认服务器已更换密钥时才继续。`
-        : `确认 SSH 服务器主机密钥指纹：\n\n${fingerprint}`,
+        ? t("form.hostKeyChanged", {
+            oldFingerprint: trustedHostKeyFingerprint.value ?? "",
+            fingerprint,
+          })
+        : t("form.confirmHostKey", { fingerprint }),
     );
-    if (!accepted) throw new Error("未信任 SSH 服务器主机密钥");
+    if (!accepted) throw new Error(t("form.hostKeyRejected"));
   }
   trustedHostKeyFingerprint.value = fingerprint;
   config.hostKeyFingerprint = fingerprint;
@@ -204,8 +208,7 @@ async function chooseMountPoint(): Promise<void> {
   }
 }
 
-const MFA_DETECTED_MESSAGE =
-  "检测到服务器要求二次验证（MFA），已自动勾选“需要 MFA”并禁用自动挂载，请输入当前 6 位 TOTP 验证码";
+const mfaDetectedMessage = (): string => t("form.mfaDetected");
 
 async function probeMfaRequirement(config: MappingConfig): Promise<boolean> {
   if (config.protocol !== "sftp" || config.sftpTotpRequired) {
@@ -229,7 +232,7 @@ async function save(): Promise<void> {
     const config = readMappingConfig();
     await verifySftpHostKey(config);
     if (config.autoMount && (await probeMfaRequirement(config))) {
-      throw new Error(`${MFA_DETECTED_MESSAGE}后重新保存`);
+      throw new Error(`${mfaDetectedMessage()}${t("form.saveAgain")}`);
     }
     await invoke("save_mapping", {
       config,
@@ -239,7 +242,7 @@ async function save(): Promise<void> {
     close();
     await store.loadMappings();
     store.setNotice(
-      draft.password || draft.privateKey.trim() ? "配置和认证信息已保存" : "配置已保存",
+      t(draft.password || draft.privateKey.trim() ? "form.savedWithAuth" : "form.saved"),
       "success",
     );
   } catch (error) {
@@ -259,11 +262,14 @@ async function testConnection(): Promise<void> {
     const config = readMappingConfig();
     const totpCode = totpActive.value ? draft.sftpTotpCode.trim() || null : null;
     if (config.sftpTotpRequired && !totpCode) {
-      throw new Error("测试 MFA 连接时请输入当前 6 位 TOTP 验证码");
+      throw new Error(t("form.mfaTestRequired"));
     }
     await verifySftpHostKey(config);
     if (await probeMfaRequirement(config)) {
-      notice.value = { message: `${MFA_DETECTED_MESSAGE}后重新测试`, kind: "success" };
+      notice.value = {
+        message: `${mfaDetectedMessage()}${t("form.testAgain")}`,
+        kind: "success",
+      };
       return;
     }
     await invoke("test_remote_connection", {
@@ -272,7 +278,10 @@ async function testConnection(): Promise<void> {
       privateKey: draft.privateKey.trim() || null,
       totpCode,
     });
-    notice.value = { message: `${config.protocol.toUpperCase()} 连接成功`, kind: "success" };
+    notice.value = {
+      message: t("form.connectionSucceeded", { protocol: config.protocol.toUpperCase() }),
+      kind: "success",
+    };
   } catch (error) {
     notice.value = { message: String(error), kind: "error" };
   } finally {
@@ -285,7 +294,7 @@ async function chooseWebDavClientCertificate(): Promise<void> {
     const selected = await openFileDialog({
       multiple: false,
       directory: false,
-      title: "选择 PEM 客户端证书和私钥",
+      title: t("form.chooseCertificate"),
     });
     if (typeof selected === "string") draft.webdavClientCertificatePath = selected;
   } catch (error) {
@@ -299,7 +308,7 @@ async function importKnownHosts(): Promise<void> {
     const selected = await openFileDialog({
       multiple: false,
       directory: false,
-      title: "选择 OpenSSH known_hosts 文件",
+      title: t("form.chooseKnownHosts"),
     });
     if (typeof selected !== "string") return;
     const fingerprints = await invoke<string[]>("import_sftp_known_hosts", {
@@ -313,10 +322,10 @@ async function importKnownHosts(): Promise<void> {
       ignoreSystemProxy: draft.ignoreSystemProxy,
     });
     if (!fingerprints.includes(liveFingerprint)) {
-      throw new Error("known_hosts 中没有当前服务器提供的主机密钥");
+      throw new Error(t("form.knownHostsMismatch"));
     }
     trustedHostKeyFingerprint.value = liveFingerprint;
-    notice.value = { message: "已从 known_hosts 验证并导入主机密钥", kind: "success" };
+    notice.value = { message: t("form.knownHostsImported"), kind: "success" };
   } catch (error) {
     notice.value = { message: String(error), kind: "error" };
   }
@@ -348,10 +357,10 @@ async function openRemoteBrowser(): Promise<void> {
     const totpCode = totpActive.value ? draft.sftpTotpCode.trim() || null : null;
     await verifySftpHostKey(config);
     if (await probeMfaRequirement(config)) {
-      throw new Error(`${MFA_DETECTED_MESSAGE}后重新浏览`);
+      throw new Error(`${mfaDetectedMessage()}${t("form.browseAgain")}`);
     }
     if (config.sftpTotpRequired && !totpCode) {
-      throw new Error("浏览 MFA SFTP 目录时请输入当前 6 位 TOTP 验证码");
+      throw new Error(t("form.mfaBrowseRequired"));
     }
     const listing = await invoke<RemoteBrowserListing>("open_remote_browser", {
       config,
@@ -477,26 +486,34 @@ defineExpose({ open });
       <div class="dialog-heading">
         <div>
           <p class="eyebrow">Mapping</p>
-          <h2 id="mapping-dialog-title">{{ editing ? "编辑映射" : "添加映射" }}</h2>
+          <h2 id="mapping-dialog-title">
+            {{ t(editing ? "form.editTitle" : "form.addTitle") }}
+          </h2>
         </div>
-        <button class="icon-button" type="button" aria-label="关闭" title="关闭" @click="close">
+        <button
+          class="icon-button"
+          type="button"
+          :aria-label="t('dialog.close')"
+          :title="t('dialog.close')"
+          @click="close"
+        >
           ×
         </button>
       </div>
 
       <div class="form-grid">
         <label class="full-width">
-          <span>名称</span>
+          <span>{{ t("form.name") }}</span>
           <input
             ref="nameInput"
             v-model="draft.name"
             required
             maxlength="64"
-            placeholder="工作文件"
+            :placeholder="t('form.namePlaceholder')"
           />
         </label>
         <label>
-          <span>协议</span>
+          <span>{{ t("form.protocol") }}</span>
           <select v-model="draft.protocol" @change="onProtocolChange">
             <option value="sftp">SFTP (SSH)</option>
             <option value="ftp">FTP</option>
@@ -504,15 +521,15 @@ defineExpose({ open });
           </select>
         </label>
         <label>
-          <span>端口</span>
+          <span>{{ t("form.port") }}</span>
           <input v-model.number="draft.port" type="number" min="1" max="65535" required />
         </label>
         <label class="full-width">
-          <span>服务器</span>
+          <span>{{ t("form.server") }}</span>
           <input v-model="draft.host" required placeholder="files.example.com" />
         </label>
         <label v-if="usernameVisible">
-          <span>用户名</span>
+          <span>{{ t("form.username") }}</span>
           <input
             v-model="draft.username"
             autocomplete="username"
@@ -521,33 +538,33 @@ defineExpose({ open });
           />
         </label>
         <label v-if="draft.protocol === 'sftp'">
-          <span>认证方式</span>
+          <span>{{ t("form.authMethod") }}</span>
           <select v-model="draft.sftpAuth">
-            <option value="password">密码</option>
-            <option value="private_key">SSH 私钥</option>
+            <option value="password">{{ t("form.password") }}</option>
+            <option value="private_key">{{ t("form.privateKey") }}</option>
             <option value="ssh_agent">SSH Agent</option>
           </select>
         </label>
         <label v-if="draft.protocol === 'webdav'">
-          <span>认证方式</span>
+          <span>{{ t("form.authMethod") }}</span>
           <select v-model="draft.webdavAuth">
             <option value="basic">Basic</option>
             <option value="digest">Digest</option>
             <option value="bearer">Bearer Token</option>
-            <option value="client_certificate">客户端证书</option>
-            <option value="anonymous">匿名</option>
+            <option value="client_certificate">{{ t("form.clientCertificate") }}</option>
+            <option value="anonymous">{{ t("form.anonymous") }}</option>
           </select>
         </label>
         <label v-if="draft.protocol === 'sftp'" class="full-width">
-          <span>SSH 主机密钥</span>
+          <span>{{ t("form.hostKey") }}</span>
           <div class="input-action">
             <input
               :value="trustedHostKeyFingerprint ?? ''"
               readonly
-              placeholder="首次连接时确认，或从 known_hosts 导入"
+              :placeholder="t('form.hostKeyPlaceholder')"
             />
             <button class="secondary" type="button" @click="importKnownHosts">
-              导入 known_hosts
+              {{ t("form.importKnownHosts") }}
             </button>
           </div>
         </label>
@@ -561,21 +578,23 @@ defineExpose({ open });
           />
         </label>
         <label v-if="privateKeyAuth">
-          <span>私钥来源</span>
+          <span>{{ t("form.keySource") }}</span>
           <select v-model="draft.keySource">
-            <option value="local">本地文件</option>
-            <option value="pasted">粘贴并安全保存</option>
+            <option value="local">{{ t("form.localFile") }}</option>
+            <option value="pasted">{{ t("form.pasteSecurely") }}</option>
           </select>
         </label>
         <label v-if="privateKeyAuth && draft.keySource === 'local'" class="full-width">
-          <span>私钥文件</span>
+          <span>{{ t("form.keyFile") }}</span>
           <div class="input-action">
-            <input v-model="draft.keyPath" readonly placeholder="选择 OpenSSH/PEM 私钥" />
-            <button class="secondary" type="button" @click="chooseKey">选择</button>
+            <input v-model="draft.keyPath" readonly :placeholder="t('form.keyFilePlaceholder')" />
+            <button class="secondary" type="button" @click="chooseKey">
+              {{ t("form.choose") }}
+            </button>
           </div>
         </label>
         <label v-if="privateKeyAuth && draft.keySource === 'pasted'" class="full-width">
-          <span>SSH 私钥</span>
+          <span>{{ t("form.privateKey") }}</span>
           <textarea
             v-model="draft.privateKey"
             rows="6"
@@ -585,24 +604,24 @@ defineExpose({ open });
         </label>
         <label v-if="draft.protocol === 'sftp'" class="checkbox-row full-width">
           <input v-model="draft.sftpTotpEnabled" type="checkbox" />
-          <span>需要 MFA</span>
+          <span>{{ t("mapping.mfaRequired") }}</span>
         </label>
         <label v-if="totpActive" class="full-width">
-          <span>当前 TOTP 验证码</span>
+          <span>{{ t("form.totp") }}</span>
           <input
             v-model="draft.sftpTotpCode"
             inputmode="numeric"
             autocomplete="one-time-code"
             maxlength="6"
-            placeholder="测试连接时输入 6 位验证码"
+            :placeholder="t('form.totpPlaceholder')"
           />
         </label>
         <label v-if="draft.protocol === 'ftp'" class="checkbox-row full-width">
           <input v-model="draft.ftpTls" type="checkbox" />
-          <span>使用显式 TLS (FTPS)</span>
+          <span>{{ t("form.explicitTls") }}</span>
         </label>
         <label>
-          <span>远程路径</span>
+          <span>{{ t("form.remotePath") }}</span>
           <div class="input-action">
             <input v-model="draft.remotePath" required />
             <button
@@ -611,26 +630,26 @@ defineExpose({ open });
               :disabled="remoteBrowserBusy"
               @click="openRemoteBrowser"
             >
-              浏览
+              {{ t("form.browse") }}
             </button>
           </div>
         </label>
         <label v-if="webdavClientCertificateAuth" class="full-width">
-          <span>客户端证书</span>
+          <span>{{ t("form.clientCertificate") }}</span>
           <div class="input-action">
             <input
               v-model="draft.webdavClientCertificatePath"
               readonly
               required
-              placeholder="包含证书链和未加密私钥的 PEM 文件"
+              :placeholder="t('form.certificatePlaceholder')"
             />
             <button class="secondary" type="button" @click="chooseWebDavClientCertificate">
-              选择
+              {{ t("form.choose") }}
             </button>
           </div>
         </label>
         <label>
-          <span>本地挂载点</span>
+          <span>{{ t("form.mountPoint") }}</span>
           <div class="input-action">
             <input
               ref="mountPointInput"
@@ -639,9 +658,11 @@ defineExpose({ open });
               :class="{ 'input-error': mountPointError }"
               :aria-invalid="mountPointError !== null"
               :aria-describedby="mountPointError ? 'mount-point-error' : undefined"
-              :placeholder="store.platformInfo.os === 'windows' ? 'Z: 或 C:\\Mounts\\GugleFS' : store.platformInfo.defaultMountPoint"
+              :placeholder="store.platformInfo.os === 'windows' ? t('form.windowsMountPlaceholder') : store.platformInfo.defaultMountPoint"
             />
-            <button class="secondary" type="button" @click="chooseMountPoint">选择</button>
+            <button class="secondary" type="button" @click="chooseMountPoint">
+              {{ t("form.choose") }}
+            </button>
           </div>
           <span v-if="mountPointError" id="mount-point-error" class="field-error" role="alert">
             {{ mountPointError }}
@@ -649,23 +670,23 @@ defineExpose({ open });
         </label>
         <label class="checkbox-row full-width">
           <input v-model="draft.autoMount" type="checkbox" :disabled="totpActive" />
-          <span>解锁后自动挂载</span>
+          <span>{{ t("mapping.autoMount") }}</span>
         </label>
         <label class="checkbox-row full-width">
           <input v-model="draft.ignoreSystemProxy" type="checkbox" />
-          <span>忽略系统代理</span>
+          <span>{{ t("form.ignoreProxy") }}</span>
         </label>
         <section
           v-if="remoteBrowserOpen"
           class="remote-browser full-width"
-          aria-label="远程目录选择器"
+          :aria-label="t('form.remoteBrowser')"
         >
           <header class="remote-browser-header">
             <button
               class="icon-button"
               type="button"
-              title="上一级"
-              aria-label="上一级"
+              :title="t('form.parentDirectory')"
+              :aria-label="t('form.parentDirectory')"
               :disabled="remoteBrowserPath === remoteBrowserRoot || remoteBrowserBusy"
               @click="loadRemoteDirectories(parentRemotePath(remoteBrowserPath))"
             >
@@ -675,8 +696,8 @@ defineExpose({ open });
             <button
               class="icon-button"
               type="button"
-              title="关闭目录选择器"
-              aria-label="关闭目录选择器"
+              :title="t('form.closeBrowser')"
+              :aria-label="t('form.closeBrowser')"
               @click="closeRemoteBrowser"
             >
               ×
@@ -698,12 +719,12 @@ defineExpose({ open });
               <span aria-hidden="true">›</span>
             </button>
             <p v-if="remoteDirectories.length === 0" class="remote-browser-empty">
-              此目录没有子目录
+              {{ t("form.noSubdirectories") }}
             </p>
           </div>
           <footer class="remote-browser-footer">
             <button class="primary compact" type="button" @click="selectRemotePath">
-              选择当前目录
+              {{ t("form.selectCurrent") }}
             </button>
           </footer>
         </section>
@@ -720,12 +741,16 @@ defineExpose({ open });
       </div>
 
       <div class="dialog-actions">
-        <button class="secondary" type="button" @click="close">取消</button>
+        <button class="secondary" type="button" @click="close">{{ t("dialog.cancel") }}</button>
         <button class="secondary" type="button" :disabled="testing" @click="testConnection">
-          {{ testing ? "测试中…" : `测试 ${draft.protocol.toUpperCase()} 连接` }}
+          {{
+            testing
+              ? t("form.testing")
+              : t("form.testConnection", { protocol: draft.protocol.toUpperCase() })
+          }}
         </button>
         <button class="primary" type="submit" :disabled="saving">
-          {{ saving ? "保存中…" : "保存配置" }}
+          {{ saving ? t("form.saving") : t("form.save") }}
         </button>
       </div>
     </form>
