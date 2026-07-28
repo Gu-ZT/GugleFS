@@ -40,6 +40,21 @@ impl Default for SystemMountDriver {
     }
 }
 
+impl SystemMountDriver {
+    pub fn unmount_all(&self) -> EngineResult<()> {
+        let mounts = std::mem::take(
+            &mut *self
+                .mounts
+                .lock()
+                .map_err(|error| EngineError::Internal(error.to_string()))?,
+        );
+        for file_system in mounts.into_values() {
+            file_system.stop();
+        }
+        Ok(())
+    }
+}
+
 struct MountContext {
     vfs: Arc<DynamicVfs>,
     runtime: Handle,

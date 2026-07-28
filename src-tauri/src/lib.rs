@@ -11,7 +11,7 @@ use security::SecurityManager;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, WindowEvent,
+    AppHandle, Manager, RunEvent, WindowEvent,
 };
 
 pub struct AppState {
@@ -33,7 +33,10 @@ fn show_main_window(app: &AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config_dir = app
@@ -103,6 +106,14 @@ pub fn run() {
             commands::restore_startup_mappings,
             commands::unmount_mapping,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run GugleFS");
+        .build(tauri::generate_context!())
+        .expect("failed to build GugleFS");
+
+    app.run(|app, event| {
+        if let RunEvent::ExitRequested { .. } = event {
+            if let Some(state) = app.try_state::<AppState>() {
+                let _ = state.mount_driver.unmount_all();
+            }
+        }
+    });
 }
