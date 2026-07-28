@@ -13,7 +13,7 @@ const PASSWORD: &str = "guglefs-test";
 async fn ftp_container_exercises_remote_file_operations() {
     let host = required_env("GUGLEFS_TEST_FTP_HOST");
     let port = required_port("GUGLEFS_TEST_FTP_PORT");
-    let config = mapping(Protocol::Ftp, host, port, "/", None);
+    let config = mapping(Protocol::Ftp, host, port, "/upload", None);
     let remote = FtpFileSystem::from_config(&config, Some(PASSWORD.into())).unwrap();
 
     exercise_remote(&remote, "ftp").await;
