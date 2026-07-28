@@ -4,6 +4,12 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-29
+
+- Added backend-driven mount lifecycle events, including an explicit unmounting state used by startup recovery and app locking.
+- Added per-mapping remote I/O limits, control/transfer timeouts, safe one-shot retries, and FTP session recovery.
+- Improved keyboard operation, dialog focus, contextual screen-reader labels, and live mount/error announcements.
+
 ## [0.9.0] - 2026-07-29
 
 - Added an authenticated remote directory browser for choosing FTP, FTPS, SFTP, and WebDAV mapping roots.
@@ -12,9 +18,6 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 - Added conditional WebDAV writes using ETag/Last-Modified validators, conflict detection, safe offset-zero writes, and nonzero truncation.
 - Added WebDAV Digest, Bearer Token, anonymous, and local PEM client-certificate authentication.
 - Added case-insensitive, case-preserving WinFsp lookup with collision detection, Windows filename validation, and basic attribute projection.
-- Added backend-driven mount lifecycle events, including an explicit unmounting state used by startup recovery and app locking.
-- Added per-mapping remote I/O limits, control/transfer timeouts, safe one-shot retries, and FTP session recovery.
-- Improved keyboard operation, dialog focus, contextual screen-reader labels, and live mount/error announcements.
 
 ## [0.8.0] - 2026-07-29
 
