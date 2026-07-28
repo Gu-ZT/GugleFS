@@ -73,12 +73,17 @@ defineExpose({ open });
 </script>
 
 <template>
-  <dialog ref="dialog" class="app-dialog mount-dialog" @close="onDialogClose">
-    <form @submit.prevent="submit">
+  <dialog
+    ref="dialog"
+    class="app-dialog mount-dialog"
+    aria-labelledby="mount-dialog-title"
+    @close="onDialogClose"
+  >
+    <form :aria-busy="busy" @submit.prevent="submit">
       <div class="dialog-heading">
         <div>
           <p class="eyebrow">Mount</p>
-          <h2>挂载映射</h2>
+          <h2 id="mount-dialog-title">挂载映射</h2>
           <p class="dialog-subtitle">{{ subtitle }}</p>
         </div>
         <button class="icon-button" type="button" aria-label="关闭" title="关闭" @click="close">
@@ -114,11 +119,15 @@ defineExpose({ open });
         </label>
       </div>
 
-      <div v-if="errorMessage" class="notice dialog-notice" role="status">{{ errorMessage }}</div>
+      <div v-if="errorMessage" class="notice dialog-notice" role="alert">
+        {{ errorMessage }}
+      </div>
 
       <div class="dialog-actions">
         <button class="secondary" type="button" @click="close">取消</button>
-        <button class="primary" type="submit" :disabled="busy">挂载</button>
+        <button class="primary" type="submit" :disabled="busy">
+          {{ busy ? "挂载中…" : "挂载" }}
+        </button>
       </div>
     </form>
   </dialog>

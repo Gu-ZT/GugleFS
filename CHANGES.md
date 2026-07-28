@@ -14,6 +14,7 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 - Added case-insensitive, case-preserving WinFsp lookup with collision detection, Windows filename validation, and basic attribute projection.
 - Added backend-driven mount lifecycle events, including an explicit unmounting state used by startup recovery and app locking.
 - Added per-mapping remote I/O limits, control/transfer timeouts, safe one-shot retries, and FTP session recovery.
+- Improved keyboard operation, dialog focus, contextual screen-reader labels, and live mount/error announcements.
 
 ## [0.8.0] - 2026-07-29
 

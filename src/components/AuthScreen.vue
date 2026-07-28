@@ -85,9 +85,16 @@ onMounted(async () => {
           <h2 id="auth-title">{{ mode === "setup" ? "绑定双因素认证" : "验证身份" }}</h2>
         </div>
 
-        <div v-if="errorMessage" class="notice auth-notice" role="status">{{ errorMessage }}</div>
+        <div v-if="errorMessage" class="notice auth-notice" role="alert">
+          {{ errorMessage }}
+        </div>
 
-        <form v-if="mode === 'unlock'" class="auth-form" @submit.prevent="submitUnlock">
+        <form
+          v-if="mode === 'unlock'"
+          class="auth-form"
+          :aria-busy="busy"
+          @submit.prevent="submitUnlock"
+        >
           <label>
             <span>验证码</span>
             <input
@@ -103,7 +110,9 @@ onMounted(async () => {
               @input="normalizeCode"
             />
           </label>
-          <button class="primary btn-block" type="submit" :disabled="busy">解锁</button>
+          <button class="primary btn-block" type="submit" :disabled="busy">
+            {{ busy ? "验证中…" : "解锁" }}
+          </button>
         </form>
 
         <div v-else class="setup-layout">
@@ -120,7 +129,7 @@ onMounted(async () => {
                 <button class="secondary" type="button" @click="copySecret">复制</button>
               </div>
             </label>
-            <form class="auth-form setup-form" @submit.prevent="submitSetup">
+            <form class="auth-form setup-form" :aria-busy="busy" @submit.prevent="submitSetup">
               <label>
                 <span>验证码</span>
                 <input
@@ -136,7 +145,9 @@ onMounted(async () => {
                   @input="normalizeCode"
                 />
               </label>
-              <button class="primary btn-block" type="submit" :disabled="busy">启用 2FA</button>
+              <button class="primary btn-block" type="submit" :disabled="busy">
+                {{ busy ? "验证中…" : "启用 2FA" }}
+              </button>
             </form>
           </div>
         </div>

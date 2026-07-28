@@ -149,6 +149,8 @@ Mount and unmount commands run on Tauri's async runtime and serialize driver tra
 
 Closing the main window hides it in the system tray while mounts keep running. Double-clicking the tray icon opens and focuses the main window. The tray Exit command unmounts every filesystem created by the process before exiting. A single-instance guard prevents two GugleFS processes from claiming the same mount point.
 
+The workspace and native dialogs are fully keyboard reachable. `Ctrl+N`/`Cmd+N` opens a new mapping dialog and `Ctrl+R`/`Cmd+R` refreshes mappings without reloading the webview. Dialogs focus their first relevant field, repeated mapping actions include the mapping name for assistive technology, and mount transitions and errors use live announcements.
+
 ## Performance
 
 The shared VFS uses bounded short-lived caches: metadata for 3 seconds, directory listings for 2 seconds, and negative lookups for 1 second, with at most 4096 entries. Open files use 1 MiB sequential read-ahead. Create, write, truncate, rename, and delete operations update or invalidate relevant cache entries, including read-ahead buffers owned by other handles.

@@ -34,7 +34,11 @@ const mountLabel = computed(() => {
 </script>
 
 <template>
-  <article class="link-card" :data-state="runtime.state">
+  <article
+    class="link-card"
+    :data-state="runtime.state"
+    :aria-label="`${config.name} 映射`"
+  >
     <div class="card-head">
       <span class="protocol-badge" :data-protocol="config.protocol">
         {{ config.protocol.toUpperCase() }}
@@ -44,18 +48,24 @@ const mountLabel = computed(() => {
         class="status-pill"
         :class="`status-${runtime.state}`"
         :title="runtime.lastError ?? undefined"
+        role="status"
+        aria-live="polite"
       >
         {{ statusLabel(runtime.state) }}
       </span>
     </div>
 
     <div class="link-route">
-      <span class="route-node route-local">{{ config.mountPoint }}</span>
+      <span class="route-node route-local" :aria-label="`本地挂载点 ${config.mountPoint}`">
+        {{ config.mountPoint }}
+      </span>
       <span class="route-line" aria-hidden="true"><span class="route-signal"></span></span>
-      <span class="route-node route-remote" :title="endpoint">{{ endpoint }}</span>
+      <span class="route-node route-remote" :title="endpoint" :aria-label="`远程地址 ${endpoint}`">
+        {{ endpoint }}
+      </span>
     </div>
 
-    <p v-if="runtime.state === 'error' && runtime.lastError" class="card-error">
+    <p v-if="runtime.lastError" class="card-error" role="alert">
       {{ runtime.lastError }}
     </p>
 
@@ -79,17 +89,26 @@ const mountLabel = computed(() => {
           type="button"
           :class="[runtime.state === 'mounted' ? 'danger' : 'primary', 'compact']"
           :disabled="busy"
+          :aria-label="`${mountLabel} ${config.name}`"
+          :aria-busy="busy"
           @click="emit('toggleMount', runtime)"
         >
           {{ mountLabel }}
         </button>
-        <button type="button" class="ghost compact" :disabled="locked" @click="emit('edit', runtime)">
+        <button
+          type="button"
+          class="ghost compact"
+          :disabled="locked"
+          :aria-label="`编辑 ${config.name}`"
+          @click="emit('edit', runtime)"
+        >
           编辑
         </button>
         <button
           type="button"
           class="ghost danger-text compact"
           :disabled="locked"
+          :aria-label="`删除 ${config.name}`"
           @click="emit('remove', config.id)"
         >
           删除

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import appIconUrl from "../assets/app-icon.png";
 import { store } from "../store";
 import type { MappingRuntime } from "../types";
@@ -23,7 +23,31 @@ const showFuseTBanner = computed(
 
 onMounted(() => {
   void store.initAutoLaunch();
+  window.addEventListener("keydown", handleWorkspaceShortcut);
 });
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", handleWorkspaceShortcut);
+});
+
+function handleWorkspaceShortcut(event: KeyboardEvent): void {
+  if (event.defaultPrevented || event.altKey || (!event.ctrlKey && !event.metaKey)) return;
+  const target = event.target;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  ) {
+    return;
+  }
+  if (event.key.toLowerCase() === "n") {
+    event.preventDefault();
+    void formDialog.value?.open();
+  } else if (event.key.toLowerCase() === "r") {
+    event.preventDefault();
+    void store.loadMappings();
+  }
+}
 
 function toggleMount(runtime: MappingRuntime): void {
   const { config } = runtime;
@@ -172,7 +196,7 @@ async function exportDiagnostics(): Promise<void> {
       </div>
     </aside>
 
-    <div class="main-panel">
+    <main class="main-panel">
       <section v-if="showFuseTBanner" class="runtime-banner" aria-live="polite">
         <div class="runtime-banner-content">
           <div>
@@ -234,7 +258,13 @@ async function exportDiagnostics(): Promise<void> {
         </div>
       </header>
 
-      <div v-if="store.notice" class="notice" :data-kind="store.notice.kind" role="status">
+      <div
+        v-if="store.notice"
+        class="notice"
+        :data-kind="store.notice.kind"
+        :role="store.notice.kind === 'error' ? 'alert' : 'status'"
+        aria-live="polite"
+      >
         {{ store.notice.message }}
       </div>
 
@@ -258,7 +288,7 @@ async function exportDiagnostics(): Promise<void> {
         <p class="empty-hint">支持 SFTP、FTP、WebDAV，挂载后像本地磁盘一样使用</p>
         <button class="primary" type="button" @click="formDialog?.open()">创建第一个映射</button>
       </div>
-    </div>
+    </main>
 
     <MappingFormDialog ref="formDialog" />
     <MountDialog ref="mountDialog" />

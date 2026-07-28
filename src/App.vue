@@ -17,7 +17,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div v-if="store.phase === 'loading'" class="boot-screen">
+  <div v-if="store.phase === 'loading'" class="boot-screen" role="status" aria-live="polite">
     <span class="boot-signal" aria-hidden="true"></span>
     <p>正在连接本地安全存储…</p>
   </div>

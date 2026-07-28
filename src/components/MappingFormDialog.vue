@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { computed, reactive, ref, watch } from "vue";
+import { computed, nextTick, reactive, ref, watch } from "vue";
 import { store } from "../store";
 import type {
   AuthMethod,
@@ -18,6 +18,7 @@ const DEFAULT_PORTS: Record<Protocol, number> = { ftp: 21, sftp: 22, webdav: 443
 const dialog = ref<HTMLDialogElement | null>(null);
 const dialogEl = dialog; // template ref alias for clarity
 const formEl = ref<HTMLFormElement | null>(null);
+const nameInput = ref<HTMLInputElement | null>(null);
 
 const draft = reactive({
   id: "",
@@ -437,6 +438,8 @@ async function open(runtime?: MappingRuntime): Promise<void> {
   draft.ignoreSystemProxy = config?.ignoreSystemProxy ?? false;
   notice.value = null;
   dialogEl.value?.showModal();
+  await nextTick();
+  nameInput.value?.focus();
 }
 
 function close(): void {
@@ -464,12 +467,17 @@ defineExpose({ open });
 </script>
 
 <template>
-  <dialog ref="dialog" class="app-dialog" @close="onDialogClose">
-    <form ref="formEl" @submit.prevent="save">
+  <dialog
+    ref="dialog"
+    class="app-dialog"
+    aria-labelledby="mapping-dialog-title"
+    @close="onDialogClose"
+  >
+    <form ref="formEl" :aria-busy="saving || testing" @submit.prevent="save">
       <div class="dialog-heading">
         <div>
           <p class="eyebrow">Mapping</p>
-          <h2>{{ editing ? "编辑映射" : "添加映射" }}</h2>
+          <h2 id="mapping-dialog-title">{{ editing ? "编辑映射" : "添加映射" }}</h2>
         </div>
         <button class="icon-button" type="button" aria-label="关闭" title="关闭" @click="close">
           ×
@@ -479,7 +487,13 @@ defineExpose({ open });
       <div class="form-grid">
         <label class="full-width">
           <span>名称</span>
-          <input v-model="draft.name" required maxlength="64" placeholder="工作文件" />
+          <input
+            ref="nameInput"
+            v-model="draft.name"
+            required
+            maxlength="64"
+            placeholder="工作文件"
+          />
         </label>
         <label>
           <span>协议</span>
@@ -623,11 +637,15 @@ defineExpose({ open });
               v-model="draft.mountPoint"
               required
               :class="{ 'input-error': mountPointError }"
+              :aria-invalid="mountPointError !== null"
+              :aria-describedby="mountPointError ? 'mount-point-error' : undefined"
               :placeholder="store.platformInfo.os === 'windows' ? 'Z: 或 C:\\Mounts\\GugleFS' : store.platformInfo.defaultMountPoint"
             />
             <button class="secondary" type="button" @click="chooseMountPoint">选择</button>
           </div>
-          <span v-if="mountPointError" class="field-error" role="alert">{{ mountPointError }}</span>
+          <span v-if="mountPointError" id="mount-point-error" class="field-error" role="alert">
+            {{ mountPointError }}
+          </span>
         </label>
         <label class="checkbox-row full-width">
           <input v-model="draft.autoMount" type="checkbox" :disabled="totpActive" />
@@ -691,7 +709,13 @@ defineExpose({ open });
         </section>
       </div>
 
-      <div v-if="notice" class="notice dialog-notice" :data-kind="notice.kind" role="status">
+      <div
+        v-if="notice"
+        class="notice dialog-notice"
+        :data-kind="notice.kind"
+        :role="notice.kind === 'error' ? 'alert' : 'status'"
+        aria-live="polite"
+      >
         {{ notice.message }}
       </div>
 
@@ -700,7 +724,9 @@ defineExpose({ open });
         <button class="secondary" type="button" :disabled="testing" @click="testConnection">
           {{ testing ? "测试中…" : `测试 ${draft.protocol.toUpperCase()} 连接` }}
         </button>
-        <button class="primary" type="submit" :disabled="saving">保存配置</button>
+        <button class="primary" type="submit" :disabled="saving">
+          {{ saving ? "保存中…" : "保存配置" }}
+        </button>
       </div>
     </form>
   </dialog>

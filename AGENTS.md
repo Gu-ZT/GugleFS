@@ -8,6 +8,7 @@
 - Locking and safe application exit must unmount every filesystem created by the process. Do not weaken this invariant for UI responsiveness.
 - Route mount lifecycle changes through `MappingManager` and emit the fixed `mapping-runtime` event after every transition. Keep mount tasks attached to the Tauri application lifecycle so Exit can still unmount them.
 - Apply mount I/O limits, timeouts, and retries through `ResilientRemoteFileSystem`. Retry only operations whose requested end state is idempotent; never automatically replay create, remove, or rename after an ambiguous transport failure.
+- Preserve native keyboard navigation, dialog focus placement, contextual accessible names, and live status/error announcements when changing the desktop UI. Keep `Ctrl/Cmd+N` and `Ctrl/Cmd+R` free for workspace actions.
 
 ## Required Checks
 
