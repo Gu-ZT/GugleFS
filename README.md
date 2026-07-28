@@ -177,7 +177,7 @@ Sanitized operation events are written as JSONL under the application configurat
 
 ## CI and releases
 
-Pushes to `main` run formatting, strict Clippy, Rust tests, and the production frontend build on Windows, Ubuntu, and macOS. A separate Ubuntu gate starts isolated FTP and SFTP containers with dedicated non-root test accounts, then exercises real connection, directory, create, range read/write, rename, truncate, flush, and removal behavior before packaging can begin. Workflow actions use Node 24-compatible runtimes while GugleFS builds remain pinned to Node 22. The release workflow then publishes a `<version>+build.<run_number>` prerelease with:
+Pushes to `main` run formatting, strict Clippy, Rust tests, and the production frontend build on Windows, Ubuntu, and macOS. A separate Ubuntu gate starts isolated FTP and SFTP containers with dedicated non-root test accounts and ephemeral home directories, then exercises real connection, directory, create, range read/write, rename, truncate, flush, and removal behavior before packaging can begin. Workflow actions use Node 24-compatible runtimes while GugleFS builds remain pinned to Node 22. The release workflow then publishes a `<version>+build.<run_number>` prerelease with:
 
 The current source release line is `0.10.0`; the matching user-visible changes are tracked in [CHANGES.md](CHANGES.md) and [CHANGES.zh_CN.md](CHANGES.zh_CN.md).
 
