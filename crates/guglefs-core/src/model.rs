@@ -52,6 +52,8 @@ pub struct MappingConfig {
     #[serde(default)]
     pub host_key_fingerprint: Option<String>,
     #[serde(default)]
+    pub sftp_totp_required: bool,
+    #[serde(default)]
     pub ignore_system_proxy: bool,
     pub auto_mount: bool,
 }
@@ -93,6 +95,11 @@ impl MappingConfig {
         if self.mount_point.trim().is_empty() {
             return Err(crate::EngineError::InvalidConfig(
                 "mount point cannot be empty".into(),
+            ));
+        }
+        if self.protocol != Protocol::Sftp && self.sftp_totp_required {
+            return Err(crate::EngineError::InvalidConfig(
+                "MFA is only supported for SFTP mappings".into(),
             ));
         }
         Ok(())
@@ -141,11 +148,34 @@ mod tests {
             mount_point: "/mnt/files".into(),
             ftp_tls: false,
             host_key_fingerprint: None,
+            sftp_totp_required: false,
             ignore_system_proxy: false,
             auto_mount: false,
         };
         config.host = "files.example.com@attacker.test".into();
 
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn old_mapping_json_defaults_sftp_mfa_to_disabled() {
+        let config: MappingConfig = serde_json::from_value(serde_json::json!({
+            "id": "id",
+            "name": "name",
+            "protocol": "sftp",
+            "host": "files.example.com",
+            "port": 22,
+            "username": "user",
+            "auth": { "type": "password", "credential_id": null },
+            "remotePath": "/",
+            "mountPoint": "/mnt/files",
+            "ftpTls": false,
+            "hostKeyFingerprint": null,
+            "ignoreSystemProxy": false,
+            "autoMount": false
+        }))
+        .unwrap();
+
+        assert!(!config.sftp_totp_required);
     }
 }

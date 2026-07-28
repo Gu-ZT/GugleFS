@@ -6,6 +6,7 @@ use crate::{EngineError, EngineResult, MappingConfig};
 pub struct ConnectionSecrets {
     pub credential: Option<String>,
     pub private_key: Option<String>,
+    pub totp_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

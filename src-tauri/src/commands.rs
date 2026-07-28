@@ -235,11 +235,18 @@ pub async fn test_remote_connection(
     config: MappingConfig,
     password: Option<String>,
     private_key: Option<String>,
+    totp_code: Option<String>,
 ) -> CommandResult<()> {
     state.security.require_unlocked()?;
     let private_key = normalized_secret(private_key);
     config.validate().map_err(|error| error.to_string())?;
-    let secrets = resolve_secrets(&state, &config, normalized_secret(password), private_key)?;
+    let secrets = resolve_secrets(
+        &state,
+        &config,
+        normalized_secret(password),
+        private_key,
+        normalized_secret(totp_code),
+    )?;
     let remote: Box<dyn RemoteFileSystem> = match config.protocol {
         Protocol::Ftp => Box::new(
             FtpFileSystem::from_config(&config, secrets.credential)
@@ -266,6 +273,7 @@ pub async fn mount_mapping(
     state: State<'_, AppState>,
     id: String,
     password: Option<String>,
+    totp_code: Option<String>,
     remember: bool,
 ) -> CommandResult<MappingRuntime> {
     state.security.require_unlocked()?;
@@ -278,7 +286,14 @@ pub async fn mount_mapping(
         }
     }
     let remember_after_mount = password.is_none() || remember;
-    mount_by_id(&state, &id, password, remember_after_mount).await
+    mount_by_id(
+        &state,
+        &id,
+        password,
+        normalized_secret(totp_code),
+        remember_after_mount,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -294,20 +309,14 @@ pub async fn restore_startup_mappings(
         .map_err(|error| error.to_string())?
         .into_iter()
         .filter(|runtime| {
-            let restore_previous = remembered.contains(&runtime.config.id)
-                && has_persisted_authentication(&runtime.config);
-            (runtime.config.auto_mount || restore_previous)
-                && !matches!(
-                    runtime.state,
-                    MappingState::Mounted | MappingState::Mounting
-                )
+            should_restore_startup_mapping(runtime, remembered.contains(&runtime.config.id))
         })
         .map(|runtime| runtime.config.id)
         .collect();
 
     let attempted = mapping_ids.len();
     for id in mapping_ids {
-        if let Err(message) = mount_by_id(&state, &id, None, true).await {
+        if let Err(message) = mount_by_id(&state, &id, None, None, true).await {
             let _ = state
                 .manager
                 .finish_mount(&id, MappingState::Error, Some(message));
@@ -496,10 +505,17 @@ async fn mount_by_id(
     state: &AppState,
     id: &str,
     supplied_password: Option<String>,
+    supplied_totp_code: Option<String>,
     remember_after_mount: bool,
 ) -> CommandResult<MappingRuntime> {
     let current = state.manager.get(id).map_err(|error| error.to_string())?;
-    let secrets = resolve_secrets(state, &current.config, supplied_password, None)?;
+    let secrets = resolve_secrets(
+        state,
+        &current.config,
+        supplied_password,
+        None,
+        supplied_totp_code,
+    )?;
     let runtime = state
         .manager
         .begin_mount(id)
@@ -542,6 +558,7 @@ fn resolve_secrets(
     config: &MappingConfig,
     supplied_credential: Option<String>,
     supplied_private_key: Option<String>,
+    supplied_totp_code: Option<String>,
 ) -> CommandResult<ConnectionSecrets> {
     let credential = if supplied_credential.is_some() {
         supplied_credential
@@ -572,6 +589,7 @@ fn resolve_secrets(
     Ok(ConnectionSecrets {
         credential,
         private_key,
+        totp_code: supplied_totp_code,
     })
 }
 
@@ -601,6 +619,16 @@ fn has_persisted_authentication(config: &MappingConfig) -> bool {
     }
 }
 
+fn should_restore_startup_mapping(runtime: &MappingRuntime, was_remembered: bool) -> bool {
+    let restore_previous = was_remembered && has_persisted_authentication(&runtime.config);
+    !runtime.config.sftp_totp_required
+        && (runtime.config.auto_mount || restore_previous)
+        && !matches!(
+            runtime.state,
+            MappingState::Mounted | MappingState::Mounting
+        )
+}
+
 fn normalized_secret(secret: Option<String>) -> Option<String> {
     secret.filter(|value| !value.is_empty())
 }
@@ -623,5 +651,41 @@ fn rollback_mapping(state: &AppState, existing: Option<MappingRuntime>, mapping_
         let _ = state.manager.upsert(existing.config);
     } else {
         let _ = state.manager.remove(mapping_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sftp_runtime(mfa_required: bool) -> MappingRuntime {
+        MappingRuntime {
+            config: MappingConfig {
+                id: "sftp".into(),
+                name: "SFTP".into(),
+                protocol: Protocol::Sftp,
+                host: "files.example.com".into(),
+                port: 22,
+                username: Some("user".into()),
+                auth: AuthMethod::Password {
+                    credential_id: Some("credential".into()),
+                },
+                remote_path: "/".into(),
+                mount_point: "Z:".into(),
+                ftp_tls: false,
+                host_key_fingerprint: Some("SHA256:test".into()),
+                sftp_totp_required: mfa_required,
+                ignore_system_proxy: false,
+                auto_mount: true,
+            },
+            state: MappingState::Unmounted,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn startup_restore_skips_mfa_mappings() {
+        assert!(!should_restore_startup_mapping(&sftp_runtime(true), true));
+        assert!(should_restore_startup_mapping(&sftp_runtime(false), true));
     }
 }
