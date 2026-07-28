@@ -21,7 +21,7 @@ guglefs-mount = { path = "../crates/guglefs-mount" }
 guglefs-remote = { path = "../crates/guglefs-remote" }
 serde.workspace = true
 serde_json.workspace = true
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tokio.workspace = true
 totp-rs = { version = "5.7.2", features = ["gen_secret", "otpauth", "qr", "zeroize"] }
