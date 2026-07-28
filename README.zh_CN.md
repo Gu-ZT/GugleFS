@@ -84,15 +84,17 @@ macFUSE 的二进制许可允许非商业软件再分发，但商业软件捆绑
 
 FTP 默认使用被动模式，支持标准 FTP 和显式 FTPS；不支持已弃用的隐式 FTPS。
 
-SFTP 支持密码认证，以及 OpenSSH/PEM 私钥认证。私钥文件不限制扩展名，可直接选择 `ssh-keygen` 生成的 `id_ed25519`、`id_rsa` 等文件；也可以粘贴私钥。文件模式只保存路径，粘贴模式会将私钥分块保存到当前平台的安全凭据库。加密私钥的口令可以单独保存。首次连接会显示服务器 SHA-256 主机密钥指纹，确认后固定到映射配置；后续密钥变化必须重新确认。空闲 SSH 会定期发送保活包；传输或 session 失效后，安全的文件系统操作会自动重连并重试一次。
+SFTP 支持密码认证，以及 OpenSSH/PEM 私钥认证。私钥文件不限制扩展名，可直接选择 `ssh-keygen` 生成的 `id_ed25519`、`id_rsa` 等文件；也可以粘贴私钥。文件模式只保存路径，粘贴模式会将私钥分块保存到当前平台的安全凭据库。加密私钥的口令可以单独保存。首次连接会显示服务器 SHA-256 主机密钥指纹，确认后固定到映射配置；后续密钥变化必须重新确认。
+
+SFTP 服务器需要 MFA 时，可在映射中勾选“需要 MFA”，并在测试连接或挂载时手动输入当前 6 位 TOTP 验证码。验证码仅用于本次请求，不会保存到配置或系统凭据库；此类映射不支持自动挂载。空闲 SSH 传输会定时发送协议层 keepalive；只要已认证的 SSH 传输仍然存活，SFTP session 关闭后会静默重建，不需要再次输入验证码。如果 SSH 传输本身已经断开，则必须使用新的验证码手动重新挂载。非 MFA 连接仍会自动重连，并对可安全重试的操作重试一次。
 
 ### 系统代理
 
 每个映射默认读取系统代理，也可以勾选“忽略系统代理”强制直连。Linux 和 macOS 读取协议对应的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`SFTP_PROXY`、`ALL_PROXY` 及小写变量，并遵守 `NO_PROXY`。Windows 读取当前用户注册表 `Internet Settings` 下的 `ProxyEnable`、`ProxyServer` 和 `ProxyOverride`。WebDAV 使用 HTTP(S) 或 SOCKS5 代理；SFTP、FTP 和 FTPS 通过 HTTP CONNECT 或 SOCKS5 建立隧道，FTP 的控制连接和被动数据连接都会使用同一代理。
 
-首次启动会引导使用身份验证器注册 TOTP 2FA，之后每次启动都必须输入 6 位验证码。FTP/FTPS、SFTP 和 WebDAV 的密码、私钥口令、粘贴私钥和 TOTP 密钥分别保存在 Windows Credential Manager、macOS Keychain 或 Linux Secret Service；应用配置和挂载恢复状态只保存凭据引用和映射 ID。
+首次启动会引导使用身份验证器注册 TOTP 2FA，之后每次启动都必须输入 6 位验证码。FTP/FTPS、SFTP 和 WebDAV 的密码、私钥口令、粘贴私钥，以及用于应用启动 2FA 的 TOTP 密钥分别保存在 Windows Credential Manager、macOS Keychain 或 Linux Secret Service；应用配置和挂载恢复状态只保存凭据引用和映射 ID。SFTP MFA 验证码只在当前测试或挂载请求中使用，不会加入系统凭据库。
 
-点击“锁定”会先安全卸载当前所有映射，再进入 2FA 锁屏。解锁或重启后，GugleFS 会自动恢复上次仍处于挂载状态且已保存凭据的映射；用户主动点击“卸载”后，该映射不会在下次解锁时恢复（启用了 `auto_mount` 的配置除外）。
+点击“锁定”会先安全卸载当前所有映射，再进入 2FA 锁屏。解锁或重启后，GugleFS 会自动恢复上次仍处于挂载状态且已保存凭据的映射；用户主动点击“卸载”后，该映射不会在下次解锁时恢复（启用了 `auto_mount` 的配置除外）。需要 MFA 的 SFTP 映射始终不会自动恢复，必须由用户输入当前验证码后手动挂载。
 
 ### 托盘与退出
 
@@ -104,7 +106,7 @@ SFTP 支持密码认证，以及 OpenSSH/PEM 私钥认证。私钥文件不限�
 
 ## 安全边界
 
-`MappingConfig` 只保存凭据 ID、本地私钥路径、粘贴私钥引用、代理忽略开关和已确认的 SSH 主机指纹，不保存密码、私钥口令、代理凭据或粘贴私钥正文。FTP/FTPS、SFTP、WebDAV 凭据和 TOTP 密钥保存在系统安全凭据库；粘贴私钥按唯一 ID 分块保存，以适配平台单条凭据的大小限制。连接测试和挂载中的认证材料只通过本次 IPC 请求传递，不会写入配置、日志或 IPC 返回值。
+`MappingConfig` 只保存凭据 ID、本地私钥路径、粘贴私钥引用、是否需要 SFTP MFA、代理忽略开关和已确认的 SSH 主机指纹，不保存密码、私钥口令、代理凭据、粘贴私钥正文或 SFTP TOTP 验证码。FTP/FTPS、SFTP、WebDAV 凭据和应用启动 2FA 的 TOTP 密钥保存在系统安全凭据库；粘贴私钥按唯一 ID 分块保存，以适配平台单条凭据的大小限制。连接测试和挂载中的临时认证材料只通过本次 IPC 请求传递，不会写入配置、日志或 IPC 返回值。
 
 映射配置会保存到 Tauri 应用配置目录下的 `mappings.json`，文件包含 `schemaVersion`。用于解锁后恢复的映射 ID 单独保存在 `mount-state.json`，运行时错误和凭据内容不会写入这两个文件。
 
