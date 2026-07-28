@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, io::Cursor};
+use std::{convert::TryFrom, future::Future, io::Cursor, pin::Pin, time::Duration};
 
 use async_trait::async_trait;
 use guglefs_core::{
@@ -14,9 +14,14 @@ use suppaftp::{
     types::FileType,
     FtpError,
 };
-use tokio::{io::AsyncReadExt, sync::Mutex};
+use tokio::{io::AsyncReadExt, sync::Mutex, time};
 
 use crate::proxy::{connect_target, system_proxy, ProxyConfig};
+
+const FTP_CONTROL_TIMEOUT: Duration = Duration::from_secs(25);
+const FTP_TRANSFER_TIMEOUT: Duration = Duration::from_secs(110);
+
+type FtpOperation<'a, T> = Pin<Box<dyn Future<Output = EngineResult<T>> + Send + 'a>>;
 
 enum FtpConnection {
     Plain(AsyncFtpStream),
@@ -358,6 +363,31 @@ impl FtpFileSystem {
         Ok(connection)
     }
 
+    async fn execute<T, F>(&self, timeout: Duration, operation: F) -> EngineResult<T>
+    where
+        T: Send,
+        F: for<'a> FnOnce(&'a mut FtpConnection) -> FtpOperation<'a, T> + Send,
+    {
+        let mut connection = self.connection().await?;
+        let result = time::timeout(
+            timeout,
+            operation(connection.as_mut().expect("FTP connection initialized")),
+        )
+        .await
+        .map_err(|_| {
+            EngineError::filesystem(
+                FsErrorCode::RemoteIo,
+                format!(
+                    "FTP operation timed out after {} seconds",
+                    timeout.as_secs()
+                ),
+            )
+        })
+        .and_then(|result| result);
+        reset_failed_connection(&mut connection, &result);
+        result
+    }
+
     fn remote_path(&self, path: &str) -> String {
         let suffix = path.trim_matches('/');
         if suffix.is_empty() {
@@ -373,43 +403,51 @@ impl FtpFileSystem {
 #[async_trait]
 impl RemoteFileSystem for FtpFileSystem {
     async fn connect(&self) -> EngineResult<()> {
-        self.connection()
-            .await?
-            .as_mut()
-            .expect("FTP connection initialized")
-            .noop()
-            .await
+        self.execute(FTP_CONTROL_TIMEOUT, |connection| {
+            Box::pin(async move { connection.noop().await })
+        })
+        .await
     }
 
     async fn disconnect(&self) -> EngineResult<()> {
         if let Some(mut connection) = self.connection.lock().await.take() {
-            connection.quit().await?;
+            time::timeout(FTP_CONTROL_TIMEOUT, connection.quit())
+                .await
+                .map_err(|_| {
+                    EngineError::filesystem(FsErrorCode::RemoteIo, "FTP disconnect timed out")
+                })??;
         }
         Ok(())
     }
 
     async fn metadata(&self, path: &str) -> EngineResult<FileMetadata> {
+        let is_root = path == "/";
         let remote_path = self.remote_path(path);
-        let mut connection = self.connection().await?;
-        let connection = connection.as_mut().expect("FTP connection initialized");
-        if path == "/" {
-            connection.list_entries(&remote_path).await?;
-            return Ok(FileMetadata {
-                kind: EntryKind::Directory,
-                size: 0,
-                modified: None,
-            });
-        }
-        connection.metadata(&remote_path).await
+        self.execute(FTP_CONTROL_TIMEOUT, move |connection| {
+            Box::pin(async move {
+                if is_root {
+                    connection
+                        .list_entries(&remote_path)
+                        .await
+                        .map(|_| FileMetadata {
+                            kind: EntryKind::Directory,
+                            size: 0,
+                            modified: None,
+                        })
+                } else {
+                    connection.metadata(&remote_path).await
+                }
+            })
+        })
+        .await
     }
 
     async fn read_dir(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
         let remote_path = self.remote_path(path);
-        let mut connection = self.connection().await?;
-        let entries = connection
-            .as_mut()
-            .expect("FTP connection initialized")
-            .list_entries(&remote_path)
+        let entries = self
+            .execute(FTP_CONTROL_TIMEOUT, move |connection| {
+                Box::pin(async move { connection.list_entries(&remote_path).await })
+            })
             .await?;
         Ok(entries
             .into_iter()
@@ -435,11 +473,10 @@ impl RemoteFileSystem for FtpFileSystem {
             return Ok(Vec::new());
         }
         let remote_path = self.remote_path(path);
-        let mut connection = self.connection().await?;
-        let mut data = connection
-            .as_mut()
-            .expect("FTP connection initialized")
-            .download(&remote_path, offset)
+        let mut data = self
+            .execute(FTP_TRANSFER_TIMEOUT, move |connection| {
+                Box::pin(async move { connection.download(&remote_path, offset).await })
+            })
             .await?;
         let length = usize::try_from(length)
             .map_err(|_| EngineError::InvalidConfig("FTP read length is too large".into()))?;
@@ -450,70 +487,82 @@ impl RemoteFileSystem for FtpFileSystem {
     async fn write(&self, path: &str, offset: u64, data: Vec<u8>) -> EngineResult<u64> {
         let remote_path = self.remote_path(path);
         let written = data.len() as u64;
-        let mut connection = self.connection().await?;
-        let connection = connection.as_mut().expect("FTP connection initialized");
-        let mut content = connection.download(&remote_path, 0).await?;
-        apply_write(&mut content, offset, &data)?;
-        connection.upload(&remote_path, content).await?;
-        Ok(written)
+        self.execute(FTP_TRANSFER_TIMEOUT, move |connection| {
+            Box::pin(async move {
+                let mut content = connection.download(&remote_path, 0).await?;
+                apply_write(&mut content, offset, &data)?;
+                connection
+                    .upload(&remote_path, content)
+                    .await
+                    .map(|_| written)
+            })
+        })
+        .await
     }
 
     async fn create_file(&self, path: &str) -> EngineResult<()> {
         let remote_path = self.remote_path(path);
-        self.connection()
-            .await?
-            .as_mut()
-            .expect("FTP connection initialized")
-            .upload(&remote_path, Vec::new())
-            .await
-            .map(|_| ())
+        self.execute(FTP_CONTROL_TIMEOUT, move |connection| {
+            Box::pin(async move {
+                connection
+                    .upload(&remote_path, Vec::new())
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .await
     }
 
     async fn create_dir(&self, path: &str) -> EngineResult<()> {
         let remote_path = self.remote_path(path);
-        self.connection()
-            .await?
-            .as_mut()
-            .expect("FTP connection initialized")
-            .mkdir(&remote_path)
-            .await
+        self.execute(FTP_CONTROL_TIMEOUT, move |connection| {
+            Box::pin(async move { connection.mkdir(&remote_path).await })
+        })
+        .await
     }
 
     async fn remove(&self, path: &str, directory: bool) -> EngineResult<()> {
         let remote_path = self.remote_path(path);
-        self.connection()
-            .await?
-            .as_mut()
-            .expect("FTP connection initialized")
-            .remove(&remote_path, directory)
-            .await
+        self.execute(FTP_CONTROL_TIMEOUT, move |connection| {
+            Box::pin(async move { connection.remove(&remote_path, directory).await })
+        })
+        .await
     }
 
     async fn rename(&self, from: &str, to: &str) -> EngineResult<()> {
         let from = self.remote_path(from);
         let to = self.remote_path(to);
-        self.connection()
-            .await?
-            .as_mut()
-            .expect("FTP connection initialized")
-            .rename(&from, &to)
-            .await
+        self.execute(FTP_CONTROL_TIMEOUT, move |connection| {
+            Box::pin(async move { connection.rename(&from, &to).await })
+        })
+        .await
     }
 
     async fn truncate(&self, path: &str, size: u64) -> EngineResult<()> {
         let remote_path = self.remote_path(path);
-        let mut connection = self.connection().await?;
-        let connection = connection.as_mut().expect("FTP connection initialized");
-        let mut content = if size == 0 {
-            Vec::new()
-        } else {
-            connection.download(&remote_path, 0).await?
-        };
-        let size = usize::try_from(size)
-            .map_err(|_| EngineError::InvalidConfig("FTP file size is too large".into()))?;
-        content.resize(size, 0);
-        connection.upload(&remote_path, content).await?;
-        Ok(())
+        self.execute(FTP_TRANSFER_TIMEOUT, move |connection| {
+            Box::pin(async move {
+                let mut content = if size == 0 {
+                    Vec::new()
+                } else {
+                    connection.download(&remote_path, 0).await?
+                };
+                let size = usize::try_from(size)
+                    .map_err(|_| EngineError::InvalidConfig("FTP file size is too large".into()))?;
+                content.resize(size, 0);
+                connection.upload(&remote_path, content).await.map(|_| ())
+            })
+        })
+        .await
+    }
+}
+
+fn reset_failed_connection<T>(connection: &mut Option<FtpConnection>, result: &EngineResult<T>) {
+    if result
+        .as_ref()
+        .is_err_and(|error| error.code() == FsErrorCode::RemoteIo)
+    {
+        *connection = None;
     }
 }
 

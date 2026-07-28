@@ -2,6 +2,7 @@ mod error;
 mod manager;
 mod model;
 mod persistence;
+mod resilience;
 mod traits;
 mod vfs;
 
@@ -11,6 +12,7 @@ pub use model::{
     AuthMethod, MappingConfig, MappingRuntime, MappingState, Protocol, WebDavAuthMethod,
 };
 pub use persistence::{ConfigDocument, CONFIG_SCHEMA_VERSION};
+pub use resilience::{RemoteOperationPolicy, ResilientRemoteFileSystem};
 pub use traits::{
     ConnectionSecrets, DirectoryEntry, EntryKind, FileMetadata, FileTimes, MountDriver,
     RemoteFileSystem,

@@ -17,7 +17,7 @@ use fuser::{
 use guglefs_core::{
     ConnectionSecrets, DirectoryHandle, EngineError, EngineResult, EntryKind, FileHandle,
     FileMetadata, MappingConfig, MountDriver, OpenOptions, RemoteFileSystem, RemoteVfs,
-    VirtualFileSystem,
+    ResilientRemoteFileSystem, VirtualFileSystem,
 };
 #[cfg(feature = "remote-backends")]
 use guglefs_remote::{FtpFileSystem, SftpFileSystem, WebDavFileSystem};
@@ -639,7 +639,7 @@ fn build_remote(
     config: &MappingConfig,
     secrets: ConnectionSecrets,
 ) -> EngineResult<Arc<dyn RemoteFileSystem>> {
-    Ok(match config.protocol {
+    let backend: Arc<dyn RemoteFileSystem> = match config.protocol {
         guglefs_core::Protocol::Ftp => {
             Arc::new(FtpFileSystem::from_config(config, secrets.credential)?)
         }
@@ -647,7 +647,8 @@ fn build_remote(
             Arc::new(WebDavFileSystem::from_config(config, secrets.credential)?)
         }
         guglefs_core::Protocol::Sftp => Arc::new(SftpFileSystem::from_config(config, secrets)?),
-    })
+    };
+    Ok(Arc::new(ResilientRemoteFileSystem::new(backend)))
 }
 
 #[cfg(not(feature = "remote-backends"))]

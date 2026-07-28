@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use guglefs_core::{
     ConnectionSecrets, DirectoryHandle, EngineError, EngineResult, EntryKind, FileHandle,
     FileMetadata, FsErrorCode, MappingConfig, MountDriver, OpenOptions, RemoteFileSystem,
-    RemoteVfs, VirtualFileSystem,
+    RemoteVfs, ResilientRemoteFileSystem, VirtualFileSystem,
 };
 use guglefs_remote::{FtpFileSystem, SftpFileSystem, WebDavFileSystem};
 use tokio::runtime::Handle;
@@ -591,7 +591,7 @@ impl MountDriver for SystemMountDriver {
         {
             return Err(EngineError::AlreadyMounted(mount_point));
         }
-        let remote: Arc<dyn RemoteFileSystem> = match config.protocol {
+        let backend: Arc<dyn RemoteFileSystem> = match config.protocol {
             guglefs_core::Protocol::Ftp => {
                 Arc::new(FtpFileSystem::from_config(config, secrets.credential)?)
             }
@@ -600,6 +600,7 @@ impl MountDriver for SystemMountDriver {
             }
             guglefs_core::Protocol::Sftp => Arc::new(SftpFileSystem::from_config(config, secrets)?),
         };
+        let remote: Arc<dyn RemoteFileSystem> = Arc::new(ResilientRemoteFileSystem::new(backend));
         remote.connect().await?;
         let vfs = Arc::new(RemoteVfs::new(remote));
         vfs.getattr("/").await?;

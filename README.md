@@ -153,6 +153,8 @@ Closing the main window hides it in the system tray while mounts keep running. D
 
 The shared VFS uses bounded short-lived caches: metadata for 3 seconds, directory listings for 2 seconds, and negative lookups for 1 second, with at most 4096 entries. Open files use 1 MiB sequential read-ahead. Create, write, truncate, rename, and delete operations update or invalidate relevant cache entries, including read-ahead buffers owned by other handles.
 
+Each mounted mapping admits at most eight simultaneous remote operations. Control requests time out after 30 seconds and transfers after 120 seconds. Transient failures in reads, writes, truncation, timestamp updates, flushes, and connection setup receive one retry after a short backoff. FTP discards failed or timed-out sessions before that retry, SFTP rebuilds its session or SSH connection, and WebDAV uses the HTTP client's connection pool. Create, remove, and rename are never replayed after an ambiguous failure because the first request may already have taken effect.
+
 ## Security boundary
 
 `MappingConfig` stores credential IDs, local SSH/client-certificate private-key paths, pasted-key references, whether SFTP MFA is required, the proxy bypass flag, and approved SSH host-key fingerprints. It does not store passwords, Bearer tokens, private-key passphrases, proxy credentials, pasted private-key contents, or SFTP TOTP codes. Transient authentication material is passed only in the current IPC request and is not written to configuration, logs, or IPC responses.
