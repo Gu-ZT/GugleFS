@@ -141,6 +141,7 @@ mod tests {
             mount_point: mount_point.into(),
             ftp_tls: false,
             host_key_fingerprint: Some("SHA256:test".into()),
+            sftp_totp_required: false,
             ignore_system_proxy: false,
             auto_mount: false,
         }

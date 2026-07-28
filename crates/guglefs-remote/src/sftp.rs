@@ -11,7 +11,11 @@ use guglefs_core::{
     AuthMethod, ConnectionSecrets, DirectoryEntry, EngineError, EngineResult, EntryKind,
     FileMetadata, FsErrorCode, MappingConfig, Protocol, RemoteFileSystem,
 };
-use russh::{client, keys::PrivateKeyWithHashAlg, Disconnect};
+use russh::{
+    client::{self, KeyboardInteractiveAuthResponse, Prompt},
+    keys::PrivateKeyWithHashAlg,
+    Disconnect,
+};
 use russh_sftp::{
     client::{error::Error as SftpError, fs::Metadata, SftpSession},
     protocol::{FileAttributes, OpenFlags, StatusCode},
@@ -24,6 +28,7 @@ use tokio::{
 use crate::proxy::{connect_target, proxy_for_target, system_proxy, ProxyConfig};
 
 const SSH_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_KEYBOARD_INTERACTIVE_ROUNDS: usize = 8;
 
 enum SftpAuth {
     Password(String),
@@ -79,6 +84,8 @@ pub struct SftpFileSystem {
     port: u16,
     username: String,
     auth: SftpAuth,
+    totp_required: bool,
+    totp_code: StdMutex<Option<String>>,
     root: String,
     host_key_fingerprint: String,
     proxy: Option<ProxyConfig>,
@@ -159,12 +166,18 @@ impl SftpFileSystem {
                 ));
             }
         };
+        let totp_code = secrets.totp_code.map(validate_totp_code).transpose()?;
+        if config.sftp_totp_required && totp_code.is_none() {
+            return Err(sftp_totp_required_error());
+        }
         let proxy = system_proxy(config)?;
         Ok(Self {
             host: config.host.clone(),
             port: config.port,
             username,
             auth,
+            totp_required: config.sftp_totp_required,
+            totp_code: StdMutex::new(totp_code),
             root: normalize_root(&config.remote_path),
             host_key_fingerprint,
             proxy,
@@ -213,24 +226,31 @@ impl SftpFileSystem {
                 })?
             }
         };
-        if !authentication.success() {
+        let authenticated = if authentication.success() {
+            true
+        } else if self.totp_required {
+            let totp_code = self
+                .totp_code
+                .lock()
+                .map_err(|error| EngineError::Internal(error.to_string()))?
+                .take()
+                .ok_or_else(sftp_totp_required_error)?;
+            let password = match &self.auth {
+                SftpAuth::Password(password) => Some(password.as_str()),
+                SftpAuth::PrivateKey { .. } => None,
+            };
+            authenticate_keyboard_interactive(&mut ssh, &self.username, password, &totp_code)
+                .await?
+        } else {
+            false
+        };
+        if !authenticated {
             return Err(EngineError::filesystem(
                 FsErrorCode::PermissionDenied,
-                "SSH authentication was rejected",
+                "SSH authentication or MFA TOTP was rejected",
             ));
         }
-        let channel = ssh
-            .channel_open_session()
-            .await
-            .map_err(|error| EngineError::Remote(format!("open SSH session channel: {error}")))?;
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|error| EngineError::Remote(format!("request SFTP subsystem: {error}")))?;
-        let sftp = SftpSession::new(channel.into_stream())
-            .await
-            .map_err(|error| sftp_error("initialize session", error))?;
-        sftp.set_timeout(30);
+        let sftp = open_sftp_session(&mut ssh).await?;
         Ok(SftpConnection { ssh, sftp })
     }
 
@@ -242,6 +262,9 @@ impl SftpFileSystem {
             .as_ref()
             .is_some_and(|connection| connection.ssh.is_closed())
         {
+            if self.totp_required {
+                return Err(sftp_mfa_remount_required_error());
+            }
             *connection = None;
         }
         if connection.is_none() {
@@ -275,6 +298,20 @@ impl SftpFileSystem {
                 Err(error) => {
                     let reconnect = reconnectable_sftp_error(&error);
                     if reconnect {
+                        let active = connection.as_mut().expect("SFTP connection initialized");
+                        if !active.ssh.is_closed() {
+                            if let Ok(sftp) = open_sftp_session(&mut active.ssh).await {
+                                active.sftp = sftp;
+                                if attempt + 1 < attempts {
+                                    continue;
+                                }
+                                return Err(sftp_error(operation, error));
+                            }
+                            return Err(sftp_error(operation, error));
+                        }
+                        if self.totp_required {
+                            return Err(sftp_mfa_remount_required_error());
+                        }
                         *connection = None;
                     }
                     if reconnect && attempt + 1 < attempts {
@@ -297,6 +334,131 @@ impl SftpFileSystem {
             format!("{}/{suffix}", self.root.trim_end_matches('/'))
         }
     }
+}
+
+async fn open_sftp_session(ssh: &mut client::Handle<HostKeyVerifier>) -> EngineResult<SftpSession> {
+    let channel = ssh
+        .channel_open_session()
+        .await
+        .map_err(|error| EngineError::Remote(format!("open SSH session channel: {error}")))?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|error| EngineError::Remote(format!("request SFTP subsystem: {error}")))?;
+    let sftp = SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|error| sftp_error("initialize session", error))?;
+    sftp.set_timeout(30);
+    Ok(sftp)
+}
+
+fn validate_totp_code(code: String) -> EngineResult<String> {
+    let code = code.trim();
+    if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(EngineError::InvalidConfig(
+            "SFTP MFA TOTP code must contain exactly 6 digits".into(),
+        ));
+    }
+    Ok(code.to_string())
+}
+
+fn sftp_totp_required_error() -> EngineError {
+    EngineError::filesystem(
+        FsErrorCode::PermissionDenied,
+        "SFTP MFA requires a current 6-digit TOTP code for manual mount",
+    )
+}
+
+fn sftp_mfa_remount_required_error() -> EngineError {
+    EngineError::filesystem(
+        FsErrorCode::PermissionDenied,
+        "SFTP MFA transport closed; manually remount with a current TOTP code",
+    )
+}
+
+async fn authenticate_keyboard_interactive(
+    ssh: &mut client::Handle<HostKeyVerifier>,
+    username: &str,
+    password: Option<&str>,
+    totp_code: &str,
+) -> EngineResult<bool> {
+    let mut response = ssh
+        .authenticate_keyboard_interactive_start(username, None)
+        .await
+        .map_err(|error| {
+            EngineError::Remote(format!(
+                "start SSH keyboard-interactive authentication: {error}"
+            ))
+        })?;
+    for _ in 0..MAX_KEYBOARD_INTERACTIVE_ROUNDS {
+        match response {
+            KeyboardInteractiveAuthResponse::Success => return Ok(true),
+            KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
+            KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
+                let responses = keyboard_interactive_responses(&prompts, password, totp_code)?;
+                response = ssh
+                    .authenticate_keyboard_interactive_respond(responses)
+                    .await
+                    .map_err(|error| {
+                        EngineError::Remote(format!(
+                            "respond to SSH keyboard-interactive authentication: {error}"
+                        ))
+                    })?;
+            }
+        }
+    }
+    Err(EngineError::Remote(
+        "SSH keyboard-interactive authentication exceeded the prompt limit".into(),
+    ))
+}
+
+fn keyboard_interactive_responses(
+    prompts: &[Prompt],
+    password: Option<&str>,
+    totp_code: &str,
+) -> EngineResult<Vec<String>> {
+    prompts
+        .iter()
+        .map(|prompt| {
+            let normalized = prompt.prompt.trim().to_lowercase();
+            if prompt_matches(
+                &normalized,
+                &[
+                    "totp",
+                    "otp",
+                    "one-time",
+                    "token",
+                    "passcode",
+                    "verification code",
+                    "authenticator code",
+                    "验证码",
+                    "动态口令",
+                    "令牌",
+                ],
+            ) {
+                return Ok(totp_code.to_string());
+            }
+            if prompt_matches(&normalized, &["password", "密码"]) {
+                return password.map(str::to_string).ok_or_else(|| {
+                    EngineError::InvalidConfig(
+                        "SFTP MFA requested a password after private-key authentication".into(),
+                    )
+                });
+            }
+            if prompts.len() == 1 {
+                Ok(totp_code.to_string())
+            } else {
+                Err(EngineError::Remote(format!(
+                    "unsupported SFTP MFA authentication prompt: {}",
+                    prompt.prompt.trim()
+                )))
+            }
+        })
+        .collect()
+}
+
+fn prompt_matches(prompt: &str, patterns: &[&str]) -> bool {
+    patterns.iter().any(|pattern| prompt.contains(pattern))
 }
 
 #[async_trait]
@@ -565,6 +727,13 @@ fn reconnectable_sftp_error(error: &SftpError) -> bool {
 mod tests {
     use super::*;
 
+    fn prompt(value: &str) -> Prompt {
+        Prompt {
+            prompt: value.into(),
+            echo: false,
+        }
+    }
+
     #[test]
     fn normalizes_sftp_roots() {
         assert_eq!(normalize_root("/"), "/");
@@ -607,5 +776,44 @@ mod tests {
         assert_eq!(config.inactivity_timeout, None);
         assert_eq!(config.keepalive_interval, Some(SSH_KEEPALIVE_INTERVAL));
         assert_eq!(config.keepalive_max, 3);
+    }
+
+    #[test]
+    fn accepts_only_six_digit_totp_codes() {
+        assert_eq!(validate_totp_code(" 123456 ".into()).unwrap(), "123456");
+        assert!(validate_totp_code("12345".into()).is_err());
+        assert!(validate_totp_code("1234567".into()).is_err());
+        assert!(validate_totp_code("12345a".into()).is_err());
+    }
+
+    #[test]
+    fn sends_totp_to_one_time_password_prompts() {
+        let responses = keyboard_interactive_responses(
+            &[prompt("One-time password:")],
+            Some("account-password"),
+            "123456",
+        )
+        .unwrap();
+
+        assert_eq!(responses, ["123456"]);
+    }
+
+    #[test]
+    fn sends_account_password_to_password_prompts() {
+        let responses = keyboard_interactive_responses(
+            &[prompt("Password:")],
+            Some("account-password"),
+            "123456",
+        )
+        .unwrap();
+
+        assert_eq!(responses, ["account-password"]);
+    }
+
+    #[test]
+    fn treats_a_single_unknown_mfa_prompt_as_totp() {
+        let responses = keyboard_interactive_responses(&[prompt("Code:")], None, "123456").unwrap();
+
+        assert_eq!(responses, ["123456"]);
     }
 }

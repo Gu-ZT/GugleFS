@@ -28,6 +28,7 @@ interface MappingConfig {
   mountPoint: string;
   ftpTls: boolean;
   hostKeyFingerprint: string | null;
+  sftpTotpRequired: boolean;
   ignoreSystemProxy: boolean;
   autoMount: boolean;
 }
@@ -257,6 +258,14 @@ app.innerHTML = `
             <span>SSH 私钥</span>
             <textarea id="private-key" name="privateKey" rows="6" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
           </label>
+          <label id="sftp-totp-field" class="checkbox-row full-width protocol-field" hidden>
+            <input id="sftp-totp-enabled" name="sftpTotpEnabled" type="checkbox" />
+            <span>需要 MFA</span>
+          </label>
+          <label id="sftp-totp-code-field" class="full-width protocol-field" hidden>
+            <span>当前 TOTP 验证码</span>
+            <input id="sftp-totp-code" name="sftpTotpCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="测试连接时输入 6 位验证码" />
+          </label>
           <label id="ftp-tls-field" class="checkbox-row full-width protocol-field" hidden>
             <input id="ftp-tls" name="ftpTls" type="checkbox" />
             <span>使用显式 TLS (FTPS)</span>
@@ -300,11 +309,15 @@ app.innerHTML = `
           <button id="close-mount-dialog" class="icon-button" type="button" aria-label="关闭" title="关闭">×</button>
         </div>
         <div class="form-grid">
-          <label class="full-width">
+          <label id="mount-credential-field" class="full-width">
             <span id="mount-credential-label">密码</span>
             <input id="mount-password" type="password" autocomplete="current-password" required />
           </label>
-          <label class="checkbox-row full-width">
+          <label id="mount-totp-field" class="full-width" hidden>
+            <span>当前 TOTP 验证码</span>
+            <input id="mount-totp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
+          </label>
+          <label id="mount-remember-field" class="checkbox-row full-width">
             <input id="remember-password" type="checkbox" checked />
             <span id="remember-password-label">保存到系统凭据库</span>
           </label>
@@ -446,6 +459,7 @@ async function initializeAuth(): Promise<void> {
 function clearMountDialog(): void {
   mountTargetId = null;
   getElement<HTMLInputElement>("mount-password").value = "";
+  getElement<HTMLInputElement>("mount-totp-code").value = "";
   getElement<HTMLInputElement>("remember-password").checked = true;
   clearElementNotice(mountNotice);
 }
@@ -454,11 +468,18 @@ function updateProtocolControls(): void {
   const protocol = getElement<HTMLSelectElement>("protocol").value as Protocol;
   const sftpAuth = getElement<HTMLSelectElement>("sftp-auth").value as "password" | "private_key";
   const privateKeyAuth = protocol === "sftp" && sftpAuth === "private_key";
+  const totpEnabled = protocol === "sftp"
+    && getElement<HTMLInputElement>("sftp-totp-enabled").checked;
   const keySource = getElement<HTMLSelectElement>("key-source").value as "local" | "pasted";
   getElement<HTMLElement>("sftp-auth-field").hidden = protocol !== "sftp";
   getElement<HTMLElement>("key-source-field").hidden = !privateKeyAuth;
   getElement<HTMLElement>("key-path-field").hidden = !privateKeyAuth || keySource !== "local";
   getElement<HTMLElement>("private-key-field").hidden = !privateKeyAuth || keySource !== "pasted";
+  getElement<HTMLElement>("sftp-totp-field").hidden = protocol !== "sftp";
+  getElement<HTMLElement>("sftp-totp-code-field").hidden = !totpEnabled;
+  const autoMount = getElement<HTMLInputElement>("auto-mount");
+  autoMount.disabled = totpEnabled;
+  if (totpEnabled) autoMount.checked = false;
   getElement<HTMLSpanElement>("credential-label").textContent = privateKeyAuth ? "私钥口令" : "密码";
   getElement<HTMLInputElement>("password").placeholder = privateKeyAuth
     ? "可选；留空则保留已保存口令"
@@ -497,6 +518,9 @@ function openForm(runtime?: MappingRuntime): void {
     : "local";
   getElement<HTMLInputElement>("key-path").value = privateKeyConfig?.key_path ?? "";
   getElement<HTMLTextAreaElement>("private-key").value = "";
+  getElement<HTMLInputElement>("sftp-totp-enabled").checked =
+    runtime?.config.sftpTotpRequired ?? false;
+  getElement<HTMLInputElement>("sftp-totp-code").value = "";
   getElement<HTMLInputElement>("auto-mount").checked = runtime?.config.autoMount ?? false;
   getElement<HTMLInputElement>("ignore-system-proxy").checked =
     runtime?.config.ignoreSystemProxy ?? false;
@@ -508,12 +532,22 @@ function openMountDialog(runtime: MappingRuntime): void {
   mountTargetId = runtime.config.id;
   getElement<HTMLParagraphElement>("mount-target").textContent = `${runtime.config.name} → ${runtime.config.mountPoint}`;
   getElement<HTMLInputElement>("mount-password").value = "";
+  const authenticationStored = hasPersistedAuthentication(runtime.config);
+  const credentialField = getElement<HTMLElement>("mount-credential-field");
+  const passwordInput = getElement<HTMLInputElement>("mount-password");
+  credentialField.hidden = authenticationStored;
+  passwordInput.required = !authenticationStored;
+  const totpField = getElement<HTMLElement>("mount-totp-field");
+  const totpInput = getElement<HTMLInputElement>("mount-totp-code");
+  totpField.hidden = !runtime.config.sftpTotpRequired;
+  totpInput.required = runtime.config.sftpTotpRequired;
+  getElement<HTMLElement>("mount-remember-field").hidden = authenticationStored;
   getElement<HTMLSpanElement>("mount-credential-label").textContent =
     runtime.config.auth.type === "private_key" ? "私钥口令" : "密码";
   getElement<HTMLInputElement>("remember-password").checked = true;
   clearElementNotice(mountNotice);
   if (!mountDialog.open) mountDialog.showModal();
-  getElement<HTMLInputElement>("mount-password").focus();
+  (authenticationStored && runtime.config.sftpTotpRequired ? totpInput : passwordInput).focus();
 }
 
 function statusLabel(state: MappingState): string {
@@ -555,8 +589,13 @@ function readMappingConfig(): MappingConfig {
     mountPoint: getElement<HTMLInputElement>("mount-point").value.trim(),
     ftpTls: protocol === "ftp" && getElement<HTMLInputElement>("ftp-tls").checked,
     hostKeyFingerprint: protocol === "sftp" ? trustedHostKeyFingerprint : null,
+    sftpTotpRequired: protocol === "sftp"
+      && getElement<HTMLInputElement>("sftp-totp-enabled").checked,
     ignoreSystemProxy: getElement<HTMLInputElement>("ignore-system-proxy").checked,
-    autoMount: getElement<HTMLInputElement>("auto-mount").checked,
+    autoMount: protocol === "sftp"
+      && getElement<HTMLInputElement>("sftp-totp-enabled").checked
+      ? false
+      : getElement<HTMLInputElement>("auto-mount").checked,
   };
 }
 
@@ -582,6 +621,12 @@ async function verifySftpHostKey(config: MappingConfig): Promise<void> {
 
 function privateKeyInput(): string | null {
   return getElement<HTMLTextAreaElement>("private-key").value.trim() || null;
+}
+
+function sftpTotpCodeInput(): string | null {
+  if (getElement<HTMLSelectElement>("protocol").value !== "sftp"
+    || !getElement<HTMLInputElement>("sftp-totp-enabled").checked) return null;
+  return getElement<HTMLInputElement>("sftp-totp-code").value.trim() || null;
 }
 
 function hasPersistedAuthentication(config: MappingConfig): boolean {
@@ -661,8 +706,8 @@ function renderMappings(): void {
     mount.addEventListener("click", () => {
       if (runtime.state === "mounted") {
         void unmountMapping(config.id);
-      } else if (authenticationStored) {
-        void mountMapping(config.id, null, false);
+      } else if (authenticationStored && !config.sftpTotpRequired) {
+        void mountMapping(config.id, null, null, false);
       } else {
         openMountDialog(runtime);
       }
@@ -718,15 +763,21 @@ function updateMapping(runtime: MappingRuntime): void {
 }
 
 async function mountMapping(
-  id: string,
-  password: string | null,
-  remember: boolean,
+    id: string,
+    password: string | null,
+    totpCode: string | null,
+    remember: boolean,
 ): Promise<void> {
   const current = mappings.find((item) => item.config.id === id);
   if (!current) return;
   updateMapping({ ...current, state: "mounting", lastError: null });
   try {
-    const runtime = await invoke<MappingRuntime>("mount_mapping", { id, password, remember });
+    const runtime = await invoke<MappingRuntime>("mount_mapping", {
+      id,
+      password,
+      totpCode,
+      remember,
+    });
     updateMapping(runtime);
     if (mountDialog.open) mountDialog.close();
     showNotice("映射已挂载", "success");
@@ -797,7 +848,7 @@ getElement<HTMLButtonElement>("copy-secret").addEventListener("click", () => {
     });
 });
 
-for (const id of ["unlock-code", "setup-code"]) {
+for (const id of ["unlock-code", "setup-code", "sftp-totp-code", "mount-totp-code"]) {
   getElement<HTMLInputElement>(id).addEventListener("input", (event) => {
     normalizeCodeInput(event.target as HTMLInputElement);
   });
@@ -849,8 +900,12 @@ testConnectionButton.addEventListener("click", () => {
       const config = readMappingConfig();
       const password = getElement<HTMLInputElement>("password").value || null;
       const privateKey = privateKeyInput();
+      const totpCode = sftpTotpCodeInput();
+      if (config.sftpTotpRequired && !totpCode) {
+        throw new Error("测试 MFA 连接时请输入当前 6 位 TOTP 验证码");
+      }
       await verifySftpHostKey(config);
-      await invoke("test_remote_connection", { config, password, privateKey });
+      await invoke("test_remote_connection", { config, password, privateKey, totpCode });
       showDialogNotice(`${config.protocol.toUpperCase()} 连接成功`, "success");
     } catch (error) {
       showDialogNotice(String(error));
@@ -873,6 +928,7 @@ getElement<HTMLSelectElement>("protocol").addEventListener("change", (event) => 
 });
 getElement<HTMLSelectElement>("sftp-auth").addEventListener("change", updateProtocolControls);
 getElement<HTMLSelectElement>("key-source").addEventListener("change", updateProtocolControls);
+getElement<HTMLInputElement>("sftp-totp-enabled").addEventListener("change", updateProtocolControls);
 getElement<HTMLButtonElement>("choose-key").addEventListener("click", () => {
   void open({
     multiple: false,
@@ -917,6 +973,7 @@ dialog.addEventListener("close", () => {
   trustedHostKeyFingerprint = null;
   getElement<HTMLInputElement>("password").value = "";
   getElement<HTMLTextAreaElement>("private-key").value = "";
+  getElement<HTMLInputElement>("sftp-totp-code").value = "";
   clearElementNotice(dialogNotice);
 });
 
@@ -925,10 +982,11 @@ mountForm.addEventListener("submit", (event) => {
   if (!mountTargetId) return;
   const id = mountTargetId;
   const password = getElement<HTMLInputElement>("mount-password").value || null;
+  const totpCode = getElement<HTMLInputElement>("mount-totp-code").value || null;
   const remember = getElement<HTMLInputElement>("remember-password").checked;
   const submit = getElement<HTMLButtonElement>("confirm-mount");
   submit.disabled = true;
-  void mountMapping(id, password, remember).finally(() => {
+  void mountMapping(id, password, totpCode, remember).finally(() => {
     submit.disabled = false;
   });
 });
