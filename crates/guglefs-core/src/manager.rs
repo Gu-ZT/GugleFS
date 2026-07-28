@@ -82,7 +82,10 @@ impl MappingManager {
             config: config.clone(),
             state: mappings
                 .get(&config.id)
-                .map(|item| item.state)
+                .map(|item| match item.state {
+                    MappingState::Mounting | MappingState::Mounted => item.state,
+                    MappingState::Unmounted | MappingState::Error => MappingState::Unmounted,
+                })
                 .unwrap_or(MappingState::Unmounted),
             last_error: None,
         };
@@ -95,7 +98,10 @@ impl MappingManager {
         let runtime = mappings
             .get(id)
             .ok_or_else(|| EngineError::MappingNotFound(id.into()))?;
-        if runtime.state != MappingState::Unmounted {
+        if matches!(
+            runtime.state,
+            MappingState::Mounting | MappingState::Mounted
+        ) {
             return Err(EngineError::AlreadyMounted(id.into()));
         }
         mappings.remove(id);
@@ -194,6 +200,35 @@ mod tests {
         assert!(matches!(
             manager.upsert(changed),
             Err(EngineError::AlreadyMounted(_))
+        ));
+    }
+
+    #[test]
+    fn error_mappings_can_be_edited_retried_and_removed() {
+        let manager = MappingManager::default();
+        manager.upsert(config("mapping", "Z:")).unwrap();
+        manager.begin_mount("mapping").unwrap();
+        manager
+            .finish_mount("mapping", MappingState::Error, Some("mount failed".into()))
+            .unwrap();
+
+        let mut changed = config("mapping", "Z:");
+        changed.name = "changed".into();
+        let updated = manager.upsert(changed).unwrap();
+        assert_eq!(updated.state, MappingState::Unmounted);
+        assert_eq!(updated.last_error, None);
+
+        manager
+            .finish_mount(
+                "mapping",
+                MappingState::Error,
+                Some("mount failed again".into()),
+            )
+            .unwrap();
+        manager.remove("mapping").unwrap();
+        assert!(matches!(
+            manager.get("mapping"),
+            Err(EngineError::MappingNotFound(_))
         ));
     }
 }
