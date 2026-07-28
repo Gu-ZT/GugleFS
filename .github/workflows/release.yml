@@ -78,7 +78,7 @@ jobs:
 
       - name: Start FTP and SFTP test services
         run: |
-          docker compose -f scripts/integration/protocols.compose.yml up -d
+          docker compose -f scripts/integration/protocols.compose.yml up -d --wait --wait-timeout 60
           for port in 2121 2222; do
             ready=false
             for attempt in $(seq 1 60); do

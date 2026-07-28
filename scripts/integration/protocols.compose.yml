@@ -1,14 +1,20 @@
 services:
   ftp:
-    image: delfer/alpine-ftp-server:latest
+    image: stilliard/pure-ftpd:hardened
     environment:
-      USERS: "guglefs|guglefs-test|/home/guglefs"
-      ADDRESS: "127.0.0.1"
-      MIN_PORT: "21000"
-      MAX_PORT: "21010"
+      PUBLICHOST: "127.0.0.1"
+      FTP_USER_NAME: "guglefs"
+      FTP_USER_PASS: "guglefs-test"
+      FTP_USER_HOME: "/home/guglefs"
+      FTP_PASSIVE_PORTS: "21000:21010"
     ports:
       - "2121:21"
       - "21000-21010:21000-21010"
+    healthcheck:
+      test: ["CMD-SHELL", "pure-pw show guglefs >/dev/null 2>&1 && pgrep -x pure-ftpd >/dev/null"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
   sftp:
     image: atmoz/sftp:alpine
     command: "guglefs:guglefs-test:1001::upload"
