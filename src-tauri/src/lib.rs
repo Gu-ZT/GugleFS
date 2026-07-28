@@ -18,6 +18,27 @@ use tauri::{
     AppHandle, Manager, RunEvent, WindowEvent,
 };
 
+struct TrayMenuState {
+    open: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+}
+
+#[tauri::command]
+fn set_app_locale(locale: &str, tray: tauri::State<'_, TrayMenuState>) -> Result<(), String> {
+    let (open, quit) = if locale == "en" {
+        ("Open GugleFS", "Quit")
+    } else {
+        ("打开 GugleFS", "退出")
+    };
+    tray.open
+        .set_text(open)
+        .map_err(|error| error.to_string())?;
+    tray.quit
+        .set_text(quit)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub struct AppState {
     pub manager: MappingManager,
     pub config_path: PathBuf,
@@ -89,6 +110,10 @@ pub fn run() {
             let open_item = MenuItem::with_id(app, "open", "打开 GugleFS", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+            app.manage(TrayMenuState {
+                open: open_item.clone(),
+                quit: quit_item.clone(),
+            });
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -145,6 +170,7 @@ pub fn run() {
             commands::mount_mapping,
             commands::restore_startup_mappings,
             commands::unmount_mapping,
+            set_app_locale,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build GugleFS");

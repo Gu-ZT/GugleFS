@@ -1,4 +1,5 @@
 import { computed, ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 
 export type Locale = "zh-CN" | "en";
 
@@ -296,6 +297,7 @@ export function setLocale(value: Locale): void {
   locale.value = value;
   localStorage.setItem(STORAGE_KEY, value);
   document.documentElement.lang = value;
+  void syncNativeLocale();
 }
 
 export function toggleLocale(): void {
@@ -308,6 +310,10 @@ export function t(key: MessageKey, values: Record<string, string | number> = {})
     (message, [name, value]) => message.replaceAll(`{${name}}`, String(value)),
     template,
   );
+}
+
+export async function syncNativeLocale(): Promise<void> {
+  await invoke("set_app_locale", { locale: locale.value });
 }
 
 document.documentElement.lang = locale.value;

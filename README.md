@@ -153,7 +153,7 @@ Closing the main window hides it in the system tray while mounts keep running. D
 
 The workspace and native dialogs are fully keyboard reachable. `Ctrl+N`/`Cmd+N` opens a new mapping dialog and `Ctrl+R`/`Cmd+R` refreshes mappings without reloading the webview. Dialogs focus their first relevant field, repeated mapping actions include the mapping name for assistive technology, and mount transitions and errors use live announcements.
 
-The interface is available in English and Simplified Chinese. GugleFS follows the operating-system language on first launch, exposes a language switch on both the authentication screen and workspace, and keeps the user's selection locally for later launches.
+The interface is available in English and Simplified Chinese. GugleFS follows the operating-system language on first launch, exposes a language switch on both the authentication screen and workspace, updates the native tray menu immediately, and keeps the user's selection locally for later launches.
 
 ## Performance
 

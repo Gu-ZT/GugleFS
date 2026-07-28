@@ -2,7 +2,7 @@ import { reactive } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { t } from "./i18n";
+import { syncNativeLocale, t } from "./i18n";
 import type {
   AuthStatus,
   ImportMappingsResult,
@@ -224,6 +224,7 @@ export const store = reactive({
 });
 
 export async function initialize(): Promise<void> {
+  await syncNativeLocale();
   await initializeMappingRuntimeEvents();
   store.platformInfo = await invoke<PlatformInfo>("get_platform_info");
   await store.initializeAuth();
