@@ -4,16 +4,19 @@ GugleFS 的重要变更记录在此。Release 描述会读取与应用版本匹�
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-29
+
+- 增加经过认证的远程目录浏览器，用于选择 FTP、FTPS、SFTP 和 WebDAV 映射根目录。
+- 增加脱敏 JSONL 操作日志、日志轮转和用户可导出的 JSON 诊断报告。
+- 为 SFTP 映射增加跨平台 SSH Agent 认证，以及经过服务器当前密钥校验的 OpenSSH `known_hosts` 导入。
+- 为 WebDAV 增加强 ETag/Last-Modified 条件写入、并发冲突检测、安全的零偏移写入和非零截断。
+
 ## [0.8.0] - 2026-07-29
 
 - 增加可移植 JSON 映射配置导入/导出，导出文件不包含凭据或私钥引用。
 - 增加双语 Release 描述生成，并附带平台、架构、格式和文件下载表格。
 - 增加仓库威胁模型、安全不变量以及贡献/发布说明。
 - 修复 macOS FUSE-T CI 链接，并增加直接链接 `libfuse-t` 的本地兼容 pkg-config shim。
-- 增加经过认证的远程目录浏览器，用于选择 FTP、FTPS、SFTP 和 WebDAV 映射根目录。
-- 增加脱敏 JSONL 操作日志、日志轮转和用户可导出的 JSON 诊断报告。
-- 为 SFTP 映射增加跨平台 SSH Agent 认证，以及经过服务器当前密钥校验的 OpenSSH `known_hosts` 导入。
-- 为 WebDAV 增加强 ETag/Last-Modified 条件写入、并发冲突检测、安全的零偏移写入和非零截断。
 
 ## [0.7.0] - 2026-07-29
 

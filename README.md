@@ -163,7 +163,7 @@ Sanitized operation events are written as JSONL under the application configurat
 
 Pushes to `main` run formatting, strict Clippy, Rust tests, and the production frontend build on Windows, Ubuntu, and macOS. The release workflow then publishes a `<version>+build.<run_number>` prerelease with:
 
-The current source release line is `0.8.0`; the matching user-visible changes are tracked in [CHANGES.md](CHANGES.md) and [CHANGES.zh_CN.md](CHANGES.zh_CN.md).
+The current source release line is `0.9.0`; the matching user-visible changes are tracked in [CHANGES.md](CHANGES.md) and [CHANGES.zh_CN.md](CHANGES.zh_CN.md).
 
 - Windows x64 NSIS, including WinFsp
 - Linux x64 DEB and AppImage
