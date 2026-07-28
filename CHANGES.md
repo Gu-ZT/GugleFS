@@ -4,9 +4,12 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
-- Added portable JSON configuration import/export with credential and private-key references removed from exports.
-- Added release-note automation that publishes bilingual changes and an asset-to-platform download table.
-- Added a repository threat model and contributor/release invariants.
+## [0.8.0] - 2026-07-29
+
+- Added portable JSON mapping import and export; exported files contain no credential or private-key references.
+- Added bilingual Release notes generation with a platform, architecture, format, and file download table.
+- Added a repository threat model, security invariants, and contributor/release instructions.
+- Fixed macOS FUSE-T CI linking and added a local compatibility pkg-config shim for `libfuse-t`.
 
 ## [0.7.0] - 2026-07-29
 

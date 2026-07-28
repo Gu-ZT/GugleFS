@@ -152,6 +152,8 @@ SFTP 服务器需要 MFA 时，可在映射中勾选“需要 MFA”，并在测
 
 推送到 `main` 后，GitHub Actions 会在 Windows、Ubuntu 和 macOS 上分别执行格式检查、Clippy、Rust 测试和前端生产构建，再创建 `<version>+build.<run_number>` 预发布。发布产物包括 Windows x64 NSIS、Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG；正式 GitHub Release 会采用 release tag 作为应用版本。
 
+当前源代码版本线为 `0.8.0`，对应的用户可见变更记录在 [CHANGES.md](CHANGES.md) 和 [CHANGES.zh_CN.md](CHANGES.zh_CN.md) 中。
+
 Windows 安装包内置 WinFsp 运行时，macOS 包内置已校验的官方 FUSE-T 安装器、许可证和第三方归属声明。macOS 工作流支持通过 `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD` 和 `APPLE_TEAM_ID` secrets 完成签名与公证；确认凭据有效后还需设置仓库变量 `APPLE_SIGNING_ENABLED=true` 才会启用签名，否则生成未签名产物。Linux 和 Windows 代码签名仍需配置对应签名密钥。
 
 全部平台 job 结束后，CI 会读取 [CHANGES.md](CHANGES.md) 和 [CHANGES.zh_CN.md](CHANGES.zh_CN.md) 中与版本对应的章节，并将 Release 描述更新为双语更新说明、完整变更链接，以及标明每个附件对应平台、架构和格式的下载表格。
