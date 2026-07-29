@@ -127,6 +127,14 @@ impl FtpConnection {
         .map_err(|error| ftp_error("keep alive", error))
     }
 
+    async fn cwd(&mut self, path: &str) -> EngineResult<()> {
+        match self {
+            Self::Plain(stream) => stream.cwd(path).await,
+            Self::Secure(stream) => stream.cwd(path).await,
+        }
+        .map_err(|error| ftp_error("select root directory", error))
+    }
+
     async fn quit(&mut self) -> EngineResult<()> {
         match self {
             Self::Plain(stream) => stream.quit().await,
@@ -434,16 +442,13 @@ impl RemoteFileSystem for FtpFileSystem {
         self.execute(FTP_CONTROL_TIMEOUT, move |connection| {
             Box::pin(async move {
                 if is_root {
-                    connection
-                        .list_entries(&remote_path)
-                        .await
-                        .map(|_| FileMetadata {
-                            kind: EntryKind::Directory,
-                            size: 0,
-                            created: None,
-                            accessed: None,
-                            modified: None,
-                        })
+                    connection.cwd(&remote_path).await.map(|_| FileMetadata {
+                        kind: EntryKind::Directory,
+                        size: 0,
+                        created: None,
+                        accessed: None,
+                        modified: None,
+                    })
                 } else {
                     connection.metadata(&remote_path).await
                 }

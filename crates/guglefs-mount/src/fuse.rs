@@ -30,7 +30,12 @@ const ROOT_INODE: u64 = 1;
 type DynamicVfs = RemoteVfs<dyn RemoteFileSystem>;
 
 pub struct SystemMountDriver {
-    mounts: Mutex<HashMap<PathBuf, fuser::BackgroundSession>>,
+    mounts: Mutex<HashMap<PathBuf, MountedFuse>>,
+}
+
+struct MountedFuse {
+    session: fuser::BackgroundSession,
+    root_prefetch: tokio::task::JoinHandle<()>,
 }
 
 impl Default for SystemMountDriver {
@@ -50,8 +55,9 @@ impl SystemMountDriver {
                 .map_err(|error| EngineError::Internal(error.to_string()))?,
         );
         let mut failures = Vec::new();
-        for (mount_point, session) in sessions {
-            if let Err(error) = session.umount_and_join() {
+        for (mount_point, mounted) in sessions {
+            mounted.root_prefetch.abort();
+            if let Err(error) = mounted.session.umount_and_join() {
                 failures.push(format!("{}: {error}", mount_point.display()));
             }
         }
@@ -596,7 +602,7 @@ impl MountDriver for SystemMountDriver {
         let runtime = Handle::try_current().map_err(|error| {
             EngineError::Internal(format!("mount must run inside a Tokio runtime: {error}"))
         })?;
-        let callbacks = FuseCallbacks::new(vfs, runtime);
+        let callbacks = FuseCallbacks::new(Arc::clone(&vfs), runtime.clone());
         let mut options = Config::default();
         options.mount_options = vec![
             MountOption::FSName("GugleFS".into()),
@@ -615,33 +621,48 @@ impl MountDriver for SystemMountDriver {
                 mount_point.display()
             ))
         })?;
+        let root_prefetch = runtime.spawn(async move {
+            if let Ok(handle) = vfs.open_dir("/").await {
+                let _ = vfs.readdir(handle).await;
+                let _ = vfs.release_dir(handle).await;
+            }
+        });
 
         let mut mounts = match self.mounts.lock() {
             Ok(mounts) => mounts,
             Err(error) => {
+                root_prefetch.abort();
                 let _ = session.umount_and_join();
                 return Err(EngineError::Internal(error.to_string()));
             }
         };
         if mounts.contains_key(&mount_point) {
+            root_prefetch.abort();
             let _ = session.umount_and_join();
             return Err(EngineError::AlreadyMounted(
                 mount_point.display().to_string(),
             ));
         }
-        mounts.insert(mount_point, session);
+        mounts.insert(
+            mount_point,
+            MountedFuse {
+                session,
+                root_prefetch,
+            },
+        );
         Ok(())
     }
 
     async fn unmount(&self, mount_point: &str) -> EngineResult<()> {
         let mount_point = normalize_mount_point(mount_point)?;
-        let session = self
+        let mounted = self
             .mounts
             .lock()
             .map_err(|error| EngineError::Internal(error.to_string()))?
             .remove(&mount_point)
             .ok_or_else(|| EngineError::NotMounted(mount_point.display().to_string()))?;
-        session.umount_and_join().map_err(|error| {
+        mounted.root_prefetch.abort();
+        mounted.session.umount_and_join().map_err(|error| {
             EngineError::Mount(format!(
                 "FUSE unmount failed at {}: {error}",
                 mount_point.display()

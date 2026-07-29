@@ -159,7 +159,7 @@ The interface is available in English and Simplified Chinese. GugleFS follows th
 
 ## Performance
 
-The shared VFS uses bounded short-lived caches: metadata for 3 seconds, directory listings for 2 seconds, and negative lookups for 1 second, with at most 4096 entries. Open files use 1 MiB sequential read-ahead. Create, write, truncate, rename, and delete operations update or invalidate relevant cache entries, including read-ahead buffers owned by other handles.
+The shared VFS uses bounded short-lived caches: metadata for 3 seconds, directory listings for 2 seconds, and negative lookups for 1 second, with at most 4096 entries. Concurrent cold reads of the same directory share one remote request, and the root directory is prefetched asynchronously after mounting. WinFsp reuses a stable sorted snapshot across one paged enumeration, while FTP validates mapping roots with `CWD` instead of reading a full listing for root metadata. Open files use 1 MiB sequential read-ahead. Create, write, truncate, rename, and delete operations update or invalidate relevant cache entries, including read-ahead buffers owned by other handles.
 
 Each mounted mapping admits at most eight simultaneous remote operations. Control requests time out after 30 seconds and transfers after 120 seconds. Transient failures in reads, writes, truncation, timestamp updates, flushes, and connection setup receive one retry after a short backoff. FTP discards failed or timed-out sessions before that retry, SFTP rebuilds its session or SSH connection, and WebDAV uses the HTTP client's connection pool. Create, remove, and rename are never replayed after an ambiguous failure because the first request may already have taken effect.
 

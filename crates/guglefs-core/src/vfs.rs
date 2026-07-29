@@ -131,6 +131,7 @@ pub struct RemoteVfs<R: RemoteFileSystem + ?Sized> {
     directories: RwLock<HashMap<DirectoryHandle, Arc<OpenDirectory>>>,
     metadata_cache: RwLock<HashMap<String, CacheEntry<CachedMetadata>>>,
     directory_cache: RwLock<HashMap<String, CacheEntry<Vec<DirectoryEntry>>>>,
+    directory_refreshes: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     filesystem_space_cache: RwLock<HashMap<String, CacheEntry<Option<FileSystemSpace>>>>,
     filesystem_space_refresh: Mutex<()>,
 }
@@ -145,6 +146,7 @@ impl<R: RemoteFileSystem + ?Sized> RemoteVfs<R> {
             directories: RwLock::new(HashMap::new()),
             metadata_cache: RwLock::new(HashMap::new()),
             directory_cache: RwLock::new(HashMap::new()),
+            directory_refreshes: Mutex::new(HashMap::new()),
             filesystem_space_cache: RwLock::new(HashMap::new()),
             filesystem_space_refresh: Mutex::new(()),
         }
@@ -241,17 +243,44 @@ impl<R: RemoteFileSystem + ?Sized> RemoteVfs<R> {
             return Ok(entries);
         }
 
-        let entries = self.remote.read_dir(path).await?;
-        for entry in &entries {
-            self.cache_metadata(&entry.path, CachedMetadata::Found(entry.metadata.clone()))?;
+        let refresh = {
+            let mut refreshes = self.directory_refreshes.lock().await;
+            Arc::clone(
+                refreshes
+                    .entry(path.into())
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
+        };
+        let refresh_guard = refresh.lock().await;
+        let result = async {
+            if let Some(entries) = get_cached(&self.directory_cache, path)? {
+                return Ok(entries);
+            }
+
+            let entries = self.remote.read_dir(path).await?;
+            for entry in &entries {
+                self.cache_metadata(&entry.path, CachedMetadata::Found(entry.metadata.clone()))?;
+            }
+            insert_cached(
+                &self.directory_cache,
+                path.into(),
+                entries.clone(),
+                DIRECTORY_CACHE_TTL,
+            )?;
+            Ok(entries)
         }
-        insert_cached(
-            &self.directory_cache,
-            path.into(),
-            entries.clone(),
-            DIRECTORY_CACHE_TTL,
-        )?;
-        Ok(entries)
+        .await;
+        drop(refresh_guard);
+
+        let mut refreshes = self.directory_refreshes.lock().await;
+        if Arc::strong_count(&refresh) == 2
+            && refreshes
+                .get(path)
+                .is_some_and(|current| Arc::ptr_eq(current, &refresh))
+        {
+            refreshes.remove(path);
+        }
+        result
     }
 
     fn retarget_open_paths(&self, from: &str, to: &str) -> EngineResult<()> {
@@ -741,6 +770,7 @@ mod tests {
             RwLock,
         },
     };
+    use tokio::sync::Semaphore;
 
     use super::*;
 
@@ -802,6 +832,63 @@ mod tests {
                 accessed: None,
                 modified: node.modified,
             }
+        }
+    }
+
+    struct BlockingDirectoryRemote {
+        directory_reads: AtomicUsize,
+        started: Semaphore,
+        release: Semaphore,
+    }
+
+    impl BlockingDirectoryRemote {
+        fn new() -> Self {
+            Self {
+                directory_reads: AtomicUsize::new(0),
+                started: Semaphore::new(0),
+                release: Semaphore::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl RemoteFileSystem for BlockingDirectoryRemote {
+        async fn connect(&self) -> EngineResult<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> EngineResult<()> {
+            Ok(())
+        }
+
+        async fn metadata(&self, path: &str) -> EngineResult<FileMetadata> {
+            if path != "/" {
+                return Err(EngineError::filesystem(FsErrorCode::NotFound, path));
+            }
+            Ok(FileMetadata {
+                kind: EntryKind::Directory,
+                size: 0,
+                created: None,
+                accessed: None,
+                modified: None,
+            })
+        }
+
+        async fn read_dir(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
+            self.directory_reads.fetch_add(1, Ordering::Relaxed);
+            self.started.add_permits(1);
+            self.release.acquire().await.unwrap().forget();
+            Ok(vec![DirectoryEntry {
+                path: format!("{}/hello.txt", path.trim_end_matches('/')),
+                name: "hello.txt".into(),
+                metadata: FileMetadata {
+                    kind: EntryKind::File,
+                    size: 5,
+                    created: None,
+                    accessed: None,
+                    modified: None,
+                },
+            }])
         }
     }
 
@@ -1031,6 +1118,26 @@ mod tests {
             100
         );
         assert_eq!(remote.filesystem_space_reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn coalesces_concurrent_directory_cache_misses() {
+        let remote = Arc::new(BlockingDirectoryRemote::new());
+        let vfs = Arc::new(RemoteVfs::new(remote.clone()));
+        let first_handle = vfs.open_dir("/").await.unwrap();
+        let second_handle = vfs.open_dir("/").await.unwrap();
+
+        let first_vfs = Arc::clone(&vfs);
+        let first = tokio::spawn(async move { first_vfs.readdir(first_handle).await.unwrap() });
+        remote.started.acquire().await.unwrap().forget();
+        let second_vfs = Arc::clone(&vfs);
+        let second = tokio::spawn(async move { second_vfs.readdir(second_handle).await.unwrap() });
+        tokio::task::yield_now().await;
+        remote.release.add_permits(1);
+
+        assert_eq!(first.await.unwrap().len(), 1);
+        assert_eq!(second.await.unwrap().len(), 1);
+        assert_eq!(remote.directory_reads.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

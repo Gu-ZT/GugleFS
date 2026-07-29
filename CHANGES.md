@@ -4,6 +4,10 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-29
+
+- Prefetched the root directory asynchronously after mounting, coalesced concurrent reads of the same directory, and reused stable sorted snapshots across WinFsp pages; FTP now validates mapping roots with `CWD` instead of a full listing for root metadata.
+
 ## [0.13.0] - 2026-07-29
 
 - Cached filesystem-space probes briefly and kept WebDAV quota `PROPFIND` requests separate from ordinary metadata requests to avoid slowing directory browsing.

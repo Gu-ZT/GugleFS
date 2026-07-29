@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     future::Future,
     path::Path,
     sync::{
@@ -10,9 +10,9 @@ use std::{
 
 use async_trait::async_trait;
 use guglefs_core::{
-    ConnectionSecrets, DirectoryHandle, EngineError, EngineResult, EntryKind, FileHandle,
-    FileMetadata, FileSystemSpace, FsErrorCode, MappingConfig, MountDriver, OpenOptions,
-    RemoteFileSystem, RemoteVfs, ResilientRemoteFileSystem, VirtualFileSystem,
+    ConnectionSecrets, DirectoryEntry, DirectoryHandle, EngineError, EngineResult, EntryKind,
+    FileHandle, FileMetadata, FileSystemSpace, FsErrorCode, MappingConfig, MountDriver,
+    OpenOptions, RemoteFileSystem, RemoteVfs, ResilientRemoteFileSystem, VirtualFileSystem,
 };
 use guglefs_remote::{FtpFileSystem, SftpFileSystem, WebDavFileSystem};
 use tokio::runtime::Handle;
@@ -35,6 +35,7 @@ pub struct SystemMountDriver {
 struct MountedFileSystem {
     file_system: FileSystem,
     restore_empty_directory: bool,
+    root_prefetch: tokio::task::JoinHandle<()>,
 }
 
 impl Default for SystemMountDriver {
@@ -55,6 +56,7 @@ impl SystemMountDriver {
         );
         let mut failures = Vec::new();
         for (mount_point, mounted) in mounts {
+            mounted.root_prefetch.abort();
             mounted.file_system.stop();
             if let Err(error) =
                 restore_mount_directory(&mount_point, mounted.restore_empty_directory)
@@ -87,6 +89,7 @@ struct WinHandle {
     handle: HandleKind,
     writable: bool,
     delete_requested: AtomicBool,
+    directory_snapshot: Mutex<Option<Arc<Vec<DirectoryEntry>>>>,
 }
 
 struct MountCallbacks {
@@ -246,6 +249,7 @@ impl MountCallbacks {
                 handle,
                 writable,
                 delete_requested: AtomicBool::new(false),
+                directory_snapshot: Mutex::new(None),
             }),
             info,
         ))
@@ -291,6 +295,7 @@ impl MountCallbacks {
                 handle,
                 writable: true,
                 delete_requested: AtomicBool::new(false),
+                directory_snapshot: Mutex::new(None),
             }),
             info,
         ))
@@ -539,24 +544,33 @@ impl FileSystemInterface for MountCallbacks {
         let HandleKind::Directory(handle) = file_context.handle else {
             return Err(STATUS_NOT_A_DIRECTORY);
         };
-        let mut entries = file_context
-            .mount
-            .block_on(file_context.mount.vfs.readdir(handle))?;
-        entries.retain(|entry| validate_windows_component(&entry.name).is_ok());
-        entries.sort_by(|left, right| {
-            windows_name_key(&left.name)
-                .cmp(&windows_name_key(&right.name))
-                .then_with(|| left.name.cmp(&right.name))
-        });
-        let mut seen = HashSet::new();
-        let marker = marker.map(|value| value.to_string_lossy());
-        for entry in entries {
-            if !seen.insert(windows_name_key(&entry.name)) {
-                continue;
+        let entries = {
+            let mut snapshot = file_context
+                .directory_snapshot
+                .lock()
+                .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+            if marker.is_none() || snapshot.is_none() {
+                let mut entries = file_context
+                    .mount
+                    .block_on(file_context.mount.vfs.readdir(handle))?;
+                entries.retain(|entry| validate_windows_component(&entry.name).is_ok());
+                entries.sort_by(|left, right| {
+                    windows_name_key(&left.name)
+                        .cmp(&windows_name_key(&right.name))
+                        .then_with(|| left.name.cmp(&right.name))
+                });
+                entries.dedup_by(|left, right| {
+                    windows_name_key(&left.name) == windows_name_key(&right.name)
+                });
+                *snapshot = Some(Arc::new(entries));
             }
+            Arc::clone(snapshot.as_ref().expect("directory snapshot initialized"))
+        };
+        let marker = marker.map(|value| windows_name_key(&value.to_string_lossy()));
+        for entry in entries.iter() {
             if marker
                 .as_deref()
-                .is_some_and(|value| windows_name_key(&entry.name) <= windows_name_key(value))
+                .is_some_and(|value| windows_name_key(&entry.name).as_str() <= value)
             {
                 continue;
             }
@@ -634,7 +648,9 @@ impl MountDriver for SystemMountDriver {
         let file_system = FileSystem::start(
             params,
             Some(&mount_point_wide),
-            MountCallbacks { mount: context },
+            MountCallbacks {
+                mount: Arc::clone(&context),
+            },
         )
         .map_err(|status| {
             let _ = restore_mount_directory(&mount_point, restore_empty_directory);
@@ -646,15 +662,25 @@ impl MountDriver for SystemMountDriver {
                 EngineError::Mount(format!("WinFsp mount failed: 0x{status:08X}"))
             }
         })?;
+        let root_vfs = Arc::clone(&context.vfs);
+        let root_prefetch = context.runtime.spawn(async move {
+            if let Ok(handle) = root_vfs.open_dir("/").await {
+                let _ = root_vfs.readdir(handle).await;
+                let _ = root_vfs.release_dir(handle).await;
+            }
+        });
+
         let mut mounts = match self.mounts.lock() {
             Ok(mounts) => mounts,
             Err(error) => {
+                root_prefetch.abort();
                 file_system.stop();
                 let _ = restore_mount_directory(&mount_point, restore_empty_directory);
                 return Err(EngineError::Internal(error.to_string()));
             }
         };
         if mounts.contains_key(&mount_point) {
+            root_prefetch.abort();
             file_system.stop();
             let _ = restore_mount_directory(&mount_point, restore_empty_directory);
             return Err(EngineError::AlreadyMounted(mount_point));
@@ -664,6 +690,7 @@ impl MountDriver for SystemMountDriver {
             MountedFileSystem {
                 file_system,
                 restore_empty_directory,
+                root_prefetch,
             },
         );
         Ok(())
@@ -677,6 +704,7 @@ impl MountDriver for SystemMountDriver {
             .map_err(|error| EngineError::Internal(error.to_string()))?
             .remove(&mount_point)
             .ok_or_else(|| EngineError::NotMounted(mount_point.clone()))?;
+        mounted.root_prefetch.abort();
         mounted.file_system.stop();
         restore_mount_directory(&mount_point, mounted.restore_empty_directory)?;
         Ok(())
@@ -1102,6 +1130,83 @@ mod tests {
                 .block_on(callbacks.mount.vfs.getattr("/missing")),
             Err(STATUS_OBJECT_NAME_NOT_FOUND)
         );
+    }
+
+    #[test]
+    fn directory_paging_reuses_a_stable_handle_snapshot() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mount = Arc::new(MountContext {
+            vfs: memory_vfs(),
+            runtime: runtime.handle().clone(),
+        });
+        let callbacks = MountCallbacks { mount };
+        let (directory, _) = callbacks
+            .create_new(
+                "/docs".into(),
+                create_info(CreateOptions::FILE_DIRECTORY_FILE),
+            )
+            .unwrap();
+        let (first_file, _) = callbacks
+            .create_new(
+                "/docs/a.txt".into(),
+                create_info(CreateOptions::FILE_NON_DIRECTORY_FILE),
+            )
+            .unwrap();
+
+        let mut first_page = Vec::new();
+        callbacks
+            .read_directory(directory.clone(), None, |entry| {
+                let length = entry
+                    .file_name
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.file_name.len());
+                first_page.push(String::from_utf16(&entry.file_name[..length]).unwrap());
+                false
+            })
+            .unwrap();
+        assert_eq!(first_page, ["a.txt"]);
+
+        let (second_file, _) = callbacks
+            .create_new(
+                "/docs/z.txt".into(),
+                create_info(CreateOptions::FILE_NON_DIRECTORY_FILE),
+            )
+            .unwrap();
+        let marker = wide("a.txt");
+        let mut continuation = Vec::new();
+        callbacks
+            .read_directory(directory.clone(), Some(marker.as_ucstr()), |entry| {
+                let length = entry
+                    .file_name
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.file_name.len());
+                continuation.push(String::from_utf16(&entry.file_name[..length]).unwrap());
+                true
+            })
+            .unwrap();
+        assert!(continuation.is_empty());
+
+        let mut restarted = Vec::new();
+        callbacks
+            .read_directory(directory.clone(), None, |entry| {
+                let length = entry
+                    .file_name
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.file_name.len());
+                restarted.push(String::from_utf16(&entry.file_name[..length]).unwrap());
+                true
+            })
+            .unwrap();
+        assert_eq!(restarted, ["a.txt", "z.txt"]);
+
+        callbacks.close(first_file);
+        callbacks.close(second_file);
+        callbacks.close(directory);
     }
 
     #[test]
