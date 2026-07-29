@@ -241,12 +241,17 @@ impl WebDavFileSystem {
         Err(status_error(status, operation, &body))
     }
 
-    async fn propfind(&self, path: &str, depth: &str) -> EngineResult<Vec<Resource>> {
+    async fn propfind(
+        &self,
+        path: &str,
+        depth: &str,
+        request_body: &'static str,
+    ) -> EngineResult<Vec<Resource>> {
         let request = self
             .request(Method::from_bytes(b"PROPFIND").expect("valid method"), path)
             .header("Depth", depth)
             .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
-            .body(PROPFIND_BODY);
+            .body(request_body);
         let response = self.send(request, "PROPFIND").await?;
         if response.status() != StatusCode::MULTI_STATUS {
             let status = response.status();
@@ -261,7 +266,7 @@ impl WebDavFileSystem {
     }
 
     async fn resource(&self, path: &str) -> EngineResult<Resource> {
-        self.propfind(path, "0")
+        self.propfind(path, "0", METADATA_PROPFIND_BODY)
             .await?
             .into_iter()
             .next()
@@ -375,13 +380,20 @@ impl RemoteFileSystem for WebDavFileSystem {
     }
 
     async fn filesystem_space(&self, path: &str) -> EngineResult<Option<FileSystemSpace>> {
-        self.resource(path).await.map(|resource| resource.space)
+        self.propfind(path, "0", SPACE_PROPFIND_BODY)
+            .await?
+            .into_iter()
+            .next()
+            .map(|resource| resource.space)
+            .ok_or_else(|| {
+                EngineError::Remote("WebDAV returned no filesystem space metadata".into())
+            })
     }
 
     async fn read_dir(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
         let requested = normalize_path(path);
         Ok(self
-            .propfind(path, "1")
+            .propfind(path, "1", METADATA_PROPFIND_BODY)
             .await?
             .into_iter()
             .filter_map(|resource| {
@@ -562,16 +574,22 @@ struct Resource {
     space: Option<FileSystemSpace>,
 }
 
-const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
+const METADATA_PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
 <d:propfind xmlns:d="DAV:">
   <d:prop>
     <d:resourcetype />
-  <d:getcontentlength />
-  <d:getlastmodified />
+    <d:getcontentlength />
+    <d:getlastmodified />
     <d:creationdate />
+    <d:getetag />
+  </d:prop>
+</d:propfind>"#;
+
+const SPACE_PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
     <d:quota-available-bytes />
     <d:quota-used-bytes />
-  <d:getetag />
   </d:prop>
 </d:propfind>"#;
 
@@ -926,6 +944,14 @@ mod tests {
         assert_eq!(resources[1].metadata.created, Some(1_445_326_080));
         assert_eq!(resources[1].metadata.modified, Some(1_445_412_480));
         assert_eq!(resources[1].etag.as_deref(), Some("\"version-1\""));
+    }
+
+    #[test]
+    fn keeps_quota_properties_out_of_regular_metadata_requests() {
+        assert!(METADATA_PROPFIND_BODY.contains("creationdate"));
+        assert!(!METADATA_PROPFIND_BODY.contains("quota-available-bytes"));
+        assert!(SPACE_PROPFIND_BODY.contains("quota-available-bytes"));
+        assert!(!SPACE_PROPFIND_BODY.contains("getcontentlength"));
     }
 
     #[test]

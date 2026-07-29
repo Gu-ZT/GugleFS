@@ -17,7 +17,7 @@ GugleFS is a cross-platform Tauri desktop client that turns remote servers into 
 - **Locked at startup** — TOTP two-factor authentication gates the app; credentials live in the OS secure store
 - **Survives the network** — idle keepalives, silent reconnects, and mount recovery after restart
 - **Fast by default** — bounded metadata caches and 1 MiB sequential read-ahead, shared across platforms
-- **Remote facts preserved** — available protocol timestamps and storage capacity are projected into native filesystem metadata
+- **Remote facts preserved** — available protocol timestamps and storage capacity are projected into native filesystem metadata with short-lived capacity caching
 - **Stays current** — optional startup checks and manual checks link directly to the latest GitHub Release
 
 The desktop UI is built with Tauri, Vue 3, TypeScript, and Vite; the filesystem engine is Rust; packages are managed with pnpm.

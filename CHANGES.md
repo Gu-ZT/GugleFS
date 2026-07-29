@@ -4,6 +4,10 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-29
+
+- Cached filesystem-space probes briefly and kept WebDAV quota `PROPFIND` requests separate from ordinary metadata requests to avoid slowing directory browsing.
+
 ## [0.12.0] - 2026-07-29
 
 - Added optional startup and manual update checks with a GitHub Releases download link and a proxy fallback when the GitHub API is unavailable.

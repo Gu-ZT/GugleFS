@@ -18,6 +18,7 @@ use crate::{
 const METADATA_CACHE_TTL: Duration = Duration::from_secs(3);
 const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(1);
 const DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(2);
+const FILESYSTEM_SPACE_CACHE_TTL: Duration = Duration::from_secs(30);
 const READ_AHEAD_SIZE: u64 = 1024 * 1024;
 const MAX_CACHE_ENTRIES: usize = 4096;
 
@@ -130,6 +131,8 @@ pub struct RemoteVfs<R: RemoteFileSystem + ?Sized> {
     directories: RwLock<HashMap<DirectoryHandle, Arc<OpenDirectory>>>,
     metadata_cache: RwLock<HashMap<String, CacheEntry<CachedMetadata>>>,
     directory_cache: RwLock<HashMap<String, CacheEntry<Vec<DirectoryEntry>>>>,
+    filesystem_space_cache: RwLock<HashMap<String, CacheEntry<Option<FileSystemSpace>>>>,
+    filesystem_space_refresh: Mutex<()>,
 }
 
 impl<R: RemoteFileSystem + ?Sized> RemoteVfs<R> {
@@ -142,6 +145,8 @@ impl<R: RemoteFileSystem + ?Sized> RemoteVfs<R> {
             directories: RwLock::new(HashMap::new()),
             metadata_cache: RwLock::new(HashMap::new()),
             directory_cache: RwLock::new(HashMap::new()),
+            filesystem_space_cache: RwLock::new(HashMap::new()),
+            filesystem_space_refresh: Mutex::new(()),
         }
     }
 
@@ -307,7 +312,24 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
     }
 
     async fn filesystem_space(&self, path: &str) -> EngineResult<Option<FileSystemSpace>> {
-        self.remote.filesystem_space(&normalize_path(path)?).await
+        let path = normalize_path(path)?;
+        if let Some(space) = get_cached(&self.filesystem_space_cache, &path)? {
+            return Ok(space);
+        }
+
+        let _refresh = self.filesystem_space_refresh.lock().await;
+        if let Some(space) = get_cached(&self.filesystem_space_cache, &path)? {
+            return Ok(space);
+        }
+
+        let space = self.remote.filesystem_space(&path).await?;
+        insert_cached(
+            &self.filesystem_space_cache,
+            path,
+            space,
+            FILESYSTEM_SPACE_CACHE_TTL,
+        )?;
+        Ok(space)
     }
 
     async fn open(&self, path: &str, options: OpenOptions) -> EngineResult<FileHandle> {
@@ -736,6 +758,7 @@ mod tests {
         metadata_reads: AtomicUsize,
         directory_reads: AtomicUsize,
         range_reads: AtomicUsize,
+        filesystem_space_reads: AtomicUsize,
     }
 
     impl MemoryRemote {
@@ -798,6 +821,17 @@ mod tests {
                 .get(path)
                 .map(Self::node_metadata)
                 .ok_or_else(|| EngineError::filesystem(FsErrorCode::NotFound, path))
+        }
+
+        async fn filesystem_space(&self, _path: &str) -> EngineResult<Option<FileSystemSpace>> {
+            self.filesystem_space_reads.fetch_add(1, Ordering::Relaxed);
+            Ok(Some(FileSystemSpace {
+                total_bytes: 100,
+                available_bytes: 40,
+                total_files: None,
+                available_files: None,
+                block_size: 4096,
+            }))
         }
 
         async fn read_dir(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
@@ -979,6 +1013,24 @@ mod tests {
         assert!(vfs.getattr("/missing").await.is_err());
         assert!(vfs.getattr("/missing").await.is_err());
         assert_eq!(remote.metadata_reads.load(Ordering::Relaxed), 3);
+
+        assert_eq!(
+            vfs.filesystem_space("/")
+                .await
+                .unwrap()
+                .unwrap()
+                .total_bytes,
+            100
+        );
+        assert_eq!(
+            vfs.filesystem_space("/")
+                .await
+                .unwrap()
+                .unwrap()
+                .total_bytes,
+            100
+        );
+        assert_eq!(remote.filesystem_space_reads.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
