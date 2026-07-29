@@ -431,15 +431,24 @@ impl FileSystemInterface for MountCallbacks {
             return Err(STATUS_FILE_IS_A_DIRECTORY);
         };
         let path = Self::context_path(&file_context)?;
-        let offset = match mode {
-            WriteMode::Normal { offset } | WriteMode::ConstrainedIO { offset } => offset,
-            WriteMode::WriteToEOF => file_context.mount.metadata(&path)?.size,
+        let (offset, data) = match mode {
+            WriteMode::Normal { offset } => (offset, buffer.to_vec()),
+            WriteMode::ConstrainedIO { offset } => {
+                let size = file_context.mount.metadata(&path)?.size;
+                if offset >= size {
+                    return Ok((0, file_context.mount.file_info(&path)?));
+                }
+                let available = usize::try_from(size - offset).unwrap_or(usize::MAX);
+                (offset, buffer[..buffer.len().min(available)].to_vec())
+            }
+            WriteMode::WriteToEOF => (file_context.mount.metadata(&path)?.size, buffer.to_vec()),
         };
-        let written = file_context.mount.block_on(file_context.mount.vfs.write(
-            handle,
-            offset,
-            buffer.to_vec(),
-        ))?;
+        if data.is_empty() {
+            return Ok((0, file_context.mount.file_info(&path)?));
+        }
+        let written = file_context
+            .mount
+            .block_on(file_context.mount.vfs.write(handle, offset, data))?;
         Ok((written as usize, file_context.mount.file_info(&path)?))
     }
 
@@ -475,15 +484,20 @@ impl FileSystemInterface for MountCallbacks {
         &self,
         file_context: Self::FileContext,
         new_size: u64,
-        _set_allocation_size: bool,
+        set_allocation_size: bool,
     ) -> Result<FileInfo, NTSTATUS> {
         if file_context.kind == EntryKind::Directory {
             return Err(STATUS_FILE_IS_A_DIRECTORY);
         }
         let path = Self::context_path(&file_context)?;
-        file_context
-            .mount
-            .block_on(file_context.mount.vfs.truncate(&path, new_size))?;
+        // WinFsp reports allocation-size requests separately from EOF changes.
+        // The remote backends have no portable preallocation operation, so an
+        // allocation request must not pad or truncate the visible file.
+        if !set_allocation_size {
+            file_context
+                .mount
+                .block_on(file_context.mount.vfs.truncate(&path, new_size))?;
+        }
         file_context.mount.file_info(&path)
     }
 
@@ -1094,6 +1108,28 @@ mod tests {
                 false,
             )
             .unwrap();
+        callbacks.set_file_size(file.clone(), 16, true).unwrap();
+        let mut allocated = [0_u8; 16];
+        assert_eq!(callbacks.read(file.clone(), &mut allocated, 0).unwrap(), 5);
+        assert_eq!(&allocated[..5], b"hello");
+        assert_eq!(
+            callbacks
+                .write(file.clone(), b"XYZ", WriteMode::ConstrainedIO { offset: 4 },)
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(
+            callbacks
+                .write(
+                    file.clone(),
+                    b"ignored",
+                    WriteMode::ConstrainedIO { offset: 16 },
+                )
+                .unwrap()
+                .0,
+            0
+        );
         callbacks.set_file_size(file.clone(), 4, false).unwrap();
         let mut truncated = [0_u8; 8];
         assert_eq!(callbacks.read(file.clone(), &mut truncated, 0).unwrap(), 4);
@@ -1130,6 +1166,74 @@ mod tests {
                 .block_on(callbacks.mount.vfs.getattr("/missing")),
             Err(STATUS_OBJECT_NAME_NOT_FOUND)
         );
+    }
+
+    #[test]
+    fn overwrites_unicode_jar_without_changing_payload_bytes() {
+        const FILE_SIZE: usize = 851_287;
+        const WRITE_CHUNK: usize = 64 * 1024;
+        const READ_CHUNK: usize = 37 * 1024;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mount = Arc::new(MountContext {
+            vfs: memory_vfs(),
+            runtime: runtime.handle().clone(),
+        });
+        let callbacks = MountCallbacks { mount };
+        let (file, _) = callbacks
+            .create_new(
+                "/ResourcePackGenerator-Bukkit【资源包】.jar".into(),
+                create_info(CreateOptions::FILE_NON_DIRECTORY_FILE),
+            )
+            .unwrap();
+
+        let old = vec![0xa5; FILE_SIZE + 128 * 1024];
+        callbacks
+            .write(file.clone(), &old, WriteMode::Normal { offset: 0 })
+            .unwrap();
+        callbacks
+            .overwrite(
+                file.clone(),
+                FileAttributes::NORMAL,
+                false,
+                FILE_SIZE as u64,
+            )
+            .unwrap();
+        callbacks
+            .set_file_size(file.clone(), FILE_SIZE as u64, true)
+            .unwrap();
+
+        let expected: Vec<u8> = (0..FILE_SIZE)
+            .map(|index| ((index * 31 + index / 251) % 256) as u8)
+            .collect();
+        for (index, chunk) in expected.chunks(WRITE_CHUNK).enumerate() {
+            let offset = (index * WRITE_CHUNK) as u64;
+            assert_eq!(
+                callbacks
+                    .write(file.clone(), chunk, WriteMode::Normal { offset })
+                    .unwrap()
+                    .0,
+                chunk.len()
+            );
+        }
+        callbacks
+            .set_file_size(file.clone(), FILE_SIZE as u64, false)
+            .unwrap();
+        callbacks.flush(file.clone()).unwrap();
+
+        let mut actual = Vec::with_capacity(FILE_SIZE);
+        let mut offset = 0_u64;
+        while actual.len() < FILE_SIZE {
+            let mut chunk = vec![0; READ_CHUNK.min(FILE_SIZE - actual.len())];
+            let read = callbacks.read(file.clone(), &mut chunk, offset).unwrap();
+            assert_ne!(read, 0);
+            actual.extend_from_slice(&chunk[..read]);
+            offset += read as u64;
+        }
+        assert_eq!(actual, expected);
+        callbacks.close(file);
     }
 
     #[test]

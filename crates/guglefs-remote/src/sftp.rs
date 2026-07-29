@@ -617,13 +617,33 @@ impl RemoteFileSystem for SftpFileSystem {
             let remote_path = remote_path.clone();
             let data = data.clone();
             Box::pin(async move {
-                let mut file = sftp.open_with_flags(remote_path, OpenFlags::WRITE).await?;
+                let mut file = sftp
+                    .open_with_flags(remote_path.clone(), OpenFlags::WRITE)
+                    .await?;
                 file.seek(SeekFrom::Start(offset))
                     .await
                     .map_err(SftpError::from)?;
                 file.write_all(&data).await.map_err(SftpError::from)?;
                 file.flush().await.map_err(SftpError::from)?;
                 file.shutdown().await.map_err(SftpError::from)?;
+
+                let mut verification = sftp.open(remote_path).await?;
+                verification
+                    .seek(SeekFrom::Start(offset))
+                    .await
+                    .map_err(SftpError::from)?;
+                let mut persisted = vec![0; data.len()];
+                verification
+                    .read_exact(&mut persisted)
+                    .await
+                    .map_err(SftpError::from)?;
+                verification.shutdown().await.map_err(SftpError::from)?;
+                if persisted != data {
+                    return Err(SftpError::UnexpectedBehavior(format!(
+                        "SFTP write verification failed at offset {offset}: expected {} bytes",
+                        data.len()
+                    )));
+                }
                 Ok(written)
             })
         })
@@ -689,7 +709,14 @@ impl RemoteFileSystem for SftpFileSystem {
             Box::pin(async move {
                 let mut attributes = FileAttributes::empty();
                 attributes.size = Some(size);
-                sftp.set_metadata(remote_path, attributes).await
+                sftp.set_metadata(&remote_path, attributes).await?;
+                let actual_size = sftp.metadata(remote_path).await?.size.unwrap_or_default();
+                if actual_size != size {
+                    return Err(SftpError::UnexpectedBehavior(format!(
+                        "SFTP truncate verification failed: expected {size} bytes, got {actual_size}"
+                    )));
+                }
+                Ok(())
             })
         })
         .await

@@ -1,4 +1,11 @@
-use std::{convert::TryFrom, future::Future, io::Cursor, pin::Pin, time::Duration};
+use std::{
+    convert::TryFrom,
+    future::Future,
+    io::Cursor,
+    pin::Pin,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use guglefs_core::{
@@ -20,6 +27,7 @@ use crate::proxy::{connect_target, system_proxy, ProxyConfig};
 
 const FTP_CONTROL_TIMEOUT: Duration = Duration::from_secs(25);
 const FTP_TRANSFER_TIMEOUT: Duration = Duration::from_secs(110);
+static FTP_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 type FtpOperation<'a, T> = Pin<Box<dyn Future<Output = EngineResult<T>> + Send + 'a>>;
 
@@ -296,6 +304,40 @@ impl FtpConnection {
         }
         .map_err(|error| ftp_error("rename", error))
     }
+
+    async fn upload_replacement(
+        &mut self,
+        temporary_path: &str,
+        target_path: &str,
+        data: Vec<u8>,
+    ) -> EngineResult<()> {
+        let expected_size = data.len() as u64;
+        if let Err(error) = self.upload(temporary_path, data).await {
+            let _ = self.remove(temporary_path, false).await;
+            return Err(error);
+        }
+
+        let metadata = match self.metadata(temporary_path).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                let _ = self.remove(temporary_path, false).await;
+                return Err(error);
+            }
+        };
+        if metadata.kind != EntryKind::File || metadata.size != expected_size {
+            let _ = self.remove(temporary_path, false).await;
+            return Err(EngineError::Remote(format!(
+                "FTP upload verification failed: expected {expected_size} bytes, got {}",
+                metadata.size
+            )));
+        }
+
+        if let Err(error) = self.rename(temporary_path, target_path).await {
+            let _ = self.remove(temporary_path, false).await;
+            return Err(error);
+        }
+        Ok(())
+    }
 }
 
 pub struct FtpFileSystem {
@@ -501,13 +543,17 @@ impl RemoteFileSystem for FtpFileSystem {
 
     async fn write(&self, path: &str, offset: u64, data: Vec<u8>) -> EngineResult<u64> {
         let remote_path = self.remote_path(path);
+        let temporary_path = temporary_upload_path(&remote_path);
         let written = data.len() as u64;
         self.execute(FTP_TRANSFER_TIMEOUT, move |connection| {
+            let temporary_path = temporary_path.clone();
+            let remote_path = remote_path.clone();
+            let data = data.clone();
             Box::pin(async move {
                 let mut content = connection.download(&remote_path, 0).await?;
                 apply_write(&mut content, offset, &data)?;
                 connection
-                    .upload(&remote_path, content)
+                    .upload_replacement(&temporary_path, &remote_path, content)
                     .await
                     .map(|_| written)
             })
@@ -555,7 +601,10 @@ impl RemoteFileSystem for FtpFileSystem {
 
     async fn truncate(&self, path: &str, size: u64) -> EngineResult<()> {
         let remote_path = self.remote_path(path);
+        let temporary_path = temporary_upload_path(&remote_path);
         self.execute(FTP_TRANSFER_TIMEOUT, move |connection| {
+            let temporary_path = temporary_path.clone();
+            let remote_path = remote_path.clone();
             Box::pin(async move {
                 let mut content = if size == 0 {
                     Vec::new()
@@ -565,7 +614,9 @@ impl RemoteFileSystem for FtpFileSystem {
                 let size = usize::try_from(size)
                     .map_err(|_| EngineError::InvalidConfig("FTP file size is too large".into()))?;
                 content.resize(size, 0);
-                connection.upload(&remote_path, content).await.map(|_| ())
+                connection
+                    .upload_replacement(&temporary_path, &remote_path, content)
+                    .await
             })
         })
         .await
@@ -611,6 +662,17 @@ fn apply_write(content: &mut Vec<u8>, offset: u64, data: &[u8]) -> EngineResult<
     }
     content[start..end].copy_from_slice(data);
     Ok(())
+}
+
+fn temporary_upload_path(path: &str) -> String {
+    let nonce = FTP_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let (parent, _) = split_parent(path);
+    let name = format!(".guglefs-upload-{}-{nonce}", std::process::id());
+    if parent == "/" {
+        format!("/{name}")
+    } else {
+        format!("{parent}/{name}")
+    }
 }
 
 fn file_metadata(file: File) -> FileMetadata {
@@ -787,5 +849,15 @@ mod tests {
 
         apply_write(&mut existing, 8, b"Z").unwrap();
         assert_eq!(existing, b"XYcdef\0\0Z");
+    }
+
+    #[test]
+    fn creates_unique_sibling_paths_for_transactional_uploads() {
+        let first = temporary_upload_path("/docs/report.bin");
+        let second = temporary_upload_path("/docs/report.bin");
+        assert!(first.starts_with("/docs/.guglefs-upload-"));
+        assert!(second.starts_with("/docs/.guglefs-upload-"));
+        assert_ne!(first, second);
+        assert!(temporary_upload_path("/report.bin").starts_with("/.guglefs-upload-"));
     }
 }

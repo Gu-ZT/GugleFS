@@ -477,6 +477,7 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
         let file = self.file(handle)?;
         let mut operation = file.operation.lock().await;
         ensure_open(file.released.load(Ordering::Acquire), handle.id())?;
+        ensure_write_healthy(&operation)?;
         if !file.options.write {
             return Err(permission_denied("file handle is not open for writing"));
         }
@@ -490,7 +491,16 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
             (offset, self.cached_metadata(&path)?)
         };
         let (offset, cached_metadata) = cached_metadata;
-        let written = self.remote.write(&path, offset, data).await?;
+        let written = match self.remote.write(&path, offset, data).await {
+            Ok(written) => written,
+            Err(error) => {
+                operation.write_failure = Some(error.code());
+                operation.read_cache = None;
+                self.content_generation.fetch_add(1, Ordering::AcqRel);
+                let _ = self.invalidate_path(&path);
+                return Err(error);
+            }
+        };
         self.content_generation.fetch_add(1, Ordering::AcqRel);
         operation.read_cache = None;
         if let Some(CachedMetadata::Found(mut metadata)) = cached_metadata {
@@ -506,16 +516,20 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
 
     async fn flush(&self, handle: FileHandle) -> EngineResult<()> {
         let file = self.file(handle)?;
-        let _operation = file.operation.lock().await;
+        let operation = file.operation.lock().await;
         ensure_open(file.released.load(Ordering::Acquire), handle.id())?;
+        ensure_write_healthy(&operation)?;
         flush_file(self.remote.as_ref(), &file).await
     }
 
     async fn release(&self, handle: FileHandle) -> EngineResult<()> {
         let file = self.file(handle)?;
-        let _operation = file.operation.lock().await;
+        let operation = file.operation.lock().await;
         ensure_open(file.released.load(Ordering::Acquire), handle.id())?;
-        let flush_result = flush_file(self.remote.as_ref(), &file).await;
+        let flush_result = match ensure_write_healthy(&operation) {
+            Ok(()) => flush_file(self.remote.as_ref(), &file).await,
+            Err(error) => Err(error),
+        };
         file.released.store(true, Ordering::Release);
         write_lock(&self.files)?.remove(&handle);
         flush_result
@@ -613,6 +627,17 @@ struct OpenFile {
 #[derive(Default)]
 struct FileOperation {
     read_cache: Option<ReadCache>,
+    write_failure: Option<FsErrorCode>,
+}
+
+fn ensure_write_healthy(operation: &FileOperation) -> EngineResult<()> {
+    match operation.write_failure {
+        Some(code) => Err(EngineError::filesystem(
+            code,
+            "a previous remote write failed on this file handle",
+        )),
+        None => Ok(()),
+    }
 }
 
 struct ReadCache {
@@ -766,7 +791,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         sync::{
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
             RwLock,
         },
     };
@@ -789,6 +814,8 @@ mod tests {
         directory_reads: AtomicUsize,
         range_reads: AtomicUsize,
         filesystem_space_reads: AtomicUsize,
+        write_attempts: AtomicUsize,
+        fail_writes: AtomicBool,
     }
 
     impl MemoryRemote {
@@ -965,6 +992,13 @@ mod tests {
         }
 
         async fn write(&self, path: &str, offset: u64, data: Vec<u8>) -> EngineResult<u64> {
+            self.write_attempts.fetch_add(1, Ordering::Relaxed);
+            if self.fail_writes.load(Ordering::Relaxed) {
+                return Err(EngineError::filesystem(
+                    FsErrorCode::RemoteIo,
+                    "injected write failure",
+                ));
+            }
             let mut nodes = self.write_nodes();
             let node = nodes
                 .get_mut(path)
@@ -1081,6 +1115,37 @@ mod tests {
         assert!(
             matches!(vfs.read(handle, 0, 1).await, Err(error) if error.code() == FsErrorCode::InvalidHandle)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_writes_poison_the_handle_and_surface_through_flush_and_release() {
+        let remote = Arc::new(MemoryRemote::with_sample_file());
+        remote.fail_writes.store(true, Ordering::Relaxed);
+        let vfs = RemoteVfs::new(remote.clone());
+        let handle = vfs
+            .open("/hello.txt", OpenOptions::read_write())
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            vfs.write(handle, 0, b"broken".to_vec()).await,
+            Err(error) if error.code() == FsErrorCode::RemoteIo
+        ));
+        assert!(matches!(
+            vfs.write(handle, 0, b"retry".to_vec()).await,
+            Err(error) if error.code() == FsErrorCode::RemoteIo
+        ));
+        assert!(matches!(
+            vfs.flush(handle).await,
+            Err(error) if error.code() == FsErrorCode::RemoteIo
+        ));
+        assert!(matches!(
+            vfs.release(handle).await,
+            Err(error) if error.code() == FsErrorCode::RemoteIo
+        ));
+        assert_eq!(remote.write_attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(remote.read_nodes()["/hello.txt"].data.as_slice(), b"hello");
+        assert_eq!(vfs.open_file_count().unwrap(), 0);
     }
 
     #[tokio::test(flavor = "current_thread")]

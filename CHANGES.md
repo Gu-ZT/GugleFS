@@ -4,6 +4,11 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-29
+
+- Fixed WinFsp constrained-write and allocation-size semantics when overwriting existing files. SFTP now reads back every acknowledged write range and verifies the remote length after truncation; verification or transfer failures keep the file handle failed instead of silently producing a corrupt replacement.
+- FTP/FTPS writes now upload to a same-directory temporary file, verify its remote length, and rename it over the target so a failed upload preserves the original file.
+
 ## [0.14.0] - 2026-07-29
 
 - Prefetched the root directory asynchronously after mounting, coalesced concurrent reads of the same directory, and reused stable sorted snapshots across WinFsp pages; FTP now validates mapping roots with `CWD` instead of a full listing for root metadata.
