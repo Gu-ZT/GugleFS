@@ -17,6 +17,7 @@ GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置�
 - **启动即锁定** —— TOTP 双因素认证保护应用启动，凭据保存在系统安全凭据库
 - **经得起断网** —— 空闲 keepalive、静默重连、重启后恢复挂载
 - **默认就快** —— 有界元数据缓存与 1 MiB 顺序预读，三平台共用
+- **保持更新** —— 支持可关闭的启动自动检查和手动检查，并直接前往最新 GitHub Release
 
 配置界面使用 Tauri + Vue 3 + TypeScript + Vite 构建，文件系统引擎为 Rust，前端包管理器为 pnpm。
 
@@ -170,13 +171,15 @@ GugleFS 运行期间会创建固定且不含敏感信息的 `session-running` �
 
 项目的威胁模型、安全不变量、剩余风险和私下报告渠道记录在 [SECURITY.md](SECURITY.md) 中。
 
+更新检查默认开启，也可在侧边栏关闭。GugleFS 会比较当前安装包的语义化版本与最新 GitHub Release；GitHub API 不可用时，通过代理读取仓库版本作为回退，发现新版本后显示下载入口。应用不会静默下载或安装更新，因此更新流程不会绕过正常退出与卸载路径。
+
 脱敏操作事件以 JSONL 写入应用配置目录的 `logs` 文件夹；单个日志达到 1 MiB 后轮转，最多保留三个旧文件。侧边栏“导出诊断”会生成 JSON 报告，包含应用/平台版本、不具标识性的映射能力与状态摘要，以及这些固定字段事件。报告和日志不会包含主机名、用户名、路径、映射名称/ID、主机指纹、错误正文或认证材料。
 
 ## CI 与发布
 
 推送到 `main` 后，GitHub Actions 会在 Windows、Ubuntu 和 macOS 上分别执行格式检查、Clippy、Rust 测试和前端生产构建。平台原生测试会让 WinFsp 与 FUSE 回调层分别运行同一套内存远端场景，覆盖创建、目录列表、范围读写、重命名、截断、刷写、删除、句柄路径更新和文件系统错误映射，无需实际挂载。独立的 Ubuntu 门禁还会用允许完整文件系统变更操作的显式启动配置运行隔离 Pure-FTPd 与 OpenSSH/SFTP 容器，等待端口就绪后使用专用非 root 测试账号和临时 home 目录验证真实协议行为，成功后才允许开始打包。Actions 自身使用兼容 Node 24 的运行时，GugleFS 构建环境仍固定为 Node 22。随后 CI 创建 `<version>+build.<run_number>` 预发布，产物包括 Windows x64 NSIS、Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG；正式 GitHub Release 会采用 release tag 作为应用版本。
 
-当前源代码版本线为 `0.11.0`，对应的用户可见变更记录在 [CHANGES.md](CHANGES.md) 和 [CHANGES.zh_CN.md](CHANGES.zh_CN.md) 中。
+当前源代码版本线为 `0.12.0`，对应的用户可见变更记录在 [CHANGES.md](CHANGES.md) 和 [CHANGES.zh_CN.md](CHANGES.zh_CN.md) 中。
 
 Windows 安装包内置 WinFsp 运行时，macOS 包内置已校验的官方 FUSE-T 安装器、许可证和第三方归属声明。macOS 工作流支持通过 `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD` 和 `APPLE_TEAM_ID` secrets 完成签名与公证；确认凭据有效后还需设置仓库变量 `APPLE_SIGNING_ENABLED=true` 才会启用签名，否则生成未签名产物。Linux 和 Windows 代码签名仍需配置对应签名密钥。
 

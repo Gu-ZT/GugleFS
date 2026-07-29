@@ -2,6 +2,7 @@
 import { onMounted, ref } from "vue";
 import { t } from "./i18n";
 import { initialize, store } from "./store";
+import { updater } from "./updater";
 import AuthScreen from "./components/AuthScreen.vue";
 import WorkspaceView from "./components/WorkspaceView.vue";
 
@@ -10,6 +11,7 @@ const bootError = ref<string | null>(null);
 onMounted(async () => {
   try {
     await initialize();
+    if (updater.autoCheck) void updater.check(false);
   } catch (error) {
     bootError.value = String(error);
     if (store.phase === "loading") store.phase = "unlock";

@@ -17,6 +17,7 @@ GugleFS is a cross-platform Tauri desktop client that turns remote servers into 
 - **Locked at startup** — TOTP two-factor authentication gates the app; credentials live in the OS secure store
 - **Survives the network** — idle keepalives, silent reconnects, and mount recovery after restart
 - **Fast by default** — bounded metadata caches and 1 MiB sequential read-ahead, shared across platforms
+- **Stays current** — optional startup checks and manual checks link directly to the latest GitHub Release
 
 The desktop UI is built with Tauri, Vue 3, TypeScript, and Vite; the filesystem engine is Rust; packages are managed with pnpm.
 
@@ -173,13 +174,15 @@ Use the **Import** and **Export** actions in the mapping workspace to move porta
 
 The project threat model, security invariants, residual risks, and private reporting route are documented in [SECURITY.md](SECURITY.md).
 
+Update checks are enabled by default and can be disabled from the sidebar. GugleFS compares its packaged semantic version with the newest GitHub Release, falls back to the repository version through a proxy when the GitHub API is unavailable, and shows a download link when a newer version exists. It does not download or install updates silently, so updating cannot bypass the normal application exit and unmount path.
+
 Sanitized operation events are written as JSONL under the application configuration directory's `logs` folder. Logs rotate at 1 MiB with at most three older files. The **Export diagnostics** action writes a JSON report containing the app/platform version, non-identifying mapping capability/state summaries, and these fixed-field events. Hostnames, usernames, paths, mapping names/IDs, fingerprints, error text, and authentication material are excluded.
 
 ## CI and releases
 
 Pushes to `main` run formatting, strict Clippy, Rust tests, and the production frontend build on Windows, Ubuntu, and macOS. Platform-native tests drive both the WinFsp and FUSE callback layers against the same in-memory remote scenario, covering create, directory listing, range read/write, rename, truncate, flush, removal, handle retargeting, and filesystem error translation without requiring a live mount. A separate Ubuntu gate starts isolated Pure-FTPd and OpenSSH/SFTP containers with explicit startup profiles that permit the full filesystem mutation surface, waits for their published ports, and uses dedicated non-root test accounts with ephemeral home directories to exercise real protocol behavior before packaging can begin. Workflow actions use Node 24-compatible runtimes while GugleFS builds remain pinned to Node 22. The release workflow then publishes a `<version>+build.<run_number>` prerelease with:
 
-The current source release line is `0.11.0`; the matching user-visible changes are tracked in [CHANGES.md](CHANGES.md) and [CHANGES.zh_CN.md](CHANGES.zh_CN.md).
+The current source release line is `0.12.0`; the matching user-visible changes are tracked in [CHANGES.md](CHANGES.md) and [CHANGES.zh_CN.md](CHANGES.zh_CN.md).
 
 - Windows x64 NSIS, including WinFsp
 - Linux x64 DEB and AppImage

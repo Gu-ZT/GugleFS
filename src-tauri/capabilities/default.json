@@ -7,6 +7,10 @@
     "core:default",
     "dialog:allow-open",
     "dialog:allow-save",
-    "autostart:default"
+    "autostart:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://github.com/Gu-ZT/GugleFS/releases" }]
+    }
   ]
 }

@@ -3,6 +3,7 @@ mod diagnostics;
 mod mount_state;
 mod security;
 mod session_state;
+mod updater;
 
 use std::{collections::HashMap, path::PathBuf};
 
@@ -66,6 +67,7 @@ pub fn run() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--tray-only"]),
@@ -147,6 +149,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_platform_info,
+            updater::check_for_updates,
             commands::open_fuse_t_installer,
             commands::get_auth_status,
             commands::begin_2fa_setup,

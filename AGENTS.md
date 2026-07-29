@@ -35,6 +35,7 @@ Run the ignored real-protocol suite with `scripts/integration/protocols.compose.
 
 - Before every commit, update `TODO.md` and both README files for behavior changed by that commit.
 - Add user-visible changes to `CHANGES.md` and `CHANGES.zh_CN.md`. A release version must have a `## [x.y.z]` section in both files before it is pushed.
+- Every commit intended to be pushed must advance the application version because the remote workflow automatically creates a Release after each push. Never reuse an application version across pushed commits.
 - Keep the version synchronized in the workspace `Cargo.toml`, `Cargo.lock`, `package.json`, and `src-tauri/tauri.conf.json`.
 - Use the existing Conventional Commit style with concise Chinese subjects.
 - Do not mark signing, notarization, protocol compatibility, performance, or mount acceptance tasks complete without evidence from the required platform or service.

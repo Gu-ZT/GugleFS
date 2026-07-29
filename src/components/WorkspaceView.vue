@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import appIconUrl from "../assets/app-icon.png";
 import { localeLabel, t, toggleLocale } from "../i18n";
 import { store } from "../store";
+import { updater } from "../updater";
 import type { MappingRuntime } from "../types";
 import { hasPersistedAuthentication } from "../types";
 import MappingCard from "./MappingCard.vue";
@@ -175,6 +176,20 @@ async function exportDiagnostics(): Promise<void> {
             <span class="switch-knob" aria-hidden="true"></span>
           </button>
         </div>
+        <div class="autostart-row">
+          <span class="autostart-label">{{ t("workspace.autoCheckUpdates") }}</span>
+          <button
+            class="switch"
+            :class="{ on: updater.autoCheck }"
+            type="button"
+            role="switch"
+            :aria-checked="updater.autoCheck"
+            :aria-label="t('workspace.autoCheckUpdates')"
+            @click="updater.setAutoCheck(!updater.autoCheck)"
+          >
+            <span class="switch-knob" aria-hidden="true"></span>
+          </button>
+        </div>
         <button
           class="sidebar-lock language-button"
           type="button"
@@ -240,6 +255,42 @@ async function exportDiagnostics(): Promise<void> {
         </div>
       </section>
 
+      <section
+        v-if="updater.result"
+        class="runtime-banner update-banner"
+        :data-kind="updater.result.kind"
+        :role="updater.result.kind === 'error' ? 'alert' : 'status'"
+        aria-live="polite"
+      >
+        <div class="runtime-banner-content">
+          <div v-if="updater.result.kind === 'available'">
+            <strong>{{ t("update.availableTitle") }}</strong>
+            <p>
+              {{ t("update.availableBody", {
+                latest: updater.result.info.latestVersion,
+                current: updater.result.info.currentVersion,
+              }) }}
+            </p>
+          </div>
+          <div v-else-if="updater.result.kind === 'current'">
+            <strong>{{ t("update.currentTitle") }}</strong>
+            <p>{{ t("update.currentBody", { current: updater.result.info.currentVersion }) }}</p>
+          </div>
+          <div v-else>
+            <strong>{{ t("update.failedTitle") }}</strong>
+            <p>{{ t("update.failedBody") }}</p>
+          </div>
+          <button
+            v-if="updater.result.kind === 'available'"
+            class="secondary compact"
+            type="button"
+            @click="updater.openDownloadPage"
+          >
+            {{ t("update.download") }}
+          </button>
+        </div>
+      </section>
+
       <header class="main-header">
         <div>
           <p class="eyebrow">Links</p>
@@ -268,6 +319,20 @@ async function exportDiagnostics(): Promise<void> {
               <path d="M8 10V2M5 5l3-3 3 3M3 13h10" />
             </svg>
             {{ t("workspace.export") }}
+          </button>
+          <button
+            class="icon-button"
+            type="button"
+            :title="updater.checking ? t('workspace.checkingUpdates') : t('workspace.checkUpdates')"
+            :aria-label="updater.checking ? t('workspace.checkingUpdates') : t('workspace.checkUpdates')"
+            :aria-busy="updater.checking"
+            :disabled="updater.checking"
+            @click="updater.check(true)"
+          >
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" />
+              <path d="M8 5.5v5M5.8 8.4 8 10.6l2.2-2.2" />
+            </svg>
           </button>
           <button
             class="icon-button"

@@ -4,6 +4,9 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-29
+
+- Added optional startup and manual update checks with a GitHub Releases download link and a proxy fallback when the GitHub API is unavailable.
 - Added platform-native WinFsp and FUSE callback consistency tests backed by the same in-memory remote filesystem scenario.
 
 ## [0.11.0] - 2026-07-29

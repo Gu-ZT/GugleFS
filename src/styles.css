@@ -624,6 +624,24 @@ input:disabled {
   opacity: 0.85;
 }
 
+.update-banner {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: rgba(79, 141, 255, 0.35);
+}
+
+.update-banner[data-kind="current"] {
+  color: var(--signal);
+  background: var(--signal-soft);
+  border-color: rgba(63, 224, 208, 0.35);
+}
+
+.update-banner[data-kind="error"] {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: rgba(255, 111, 132, 0.35);
+}
+
 /* ---------- Link cards (signature) ---------- */
 
 .mapping-grid {
