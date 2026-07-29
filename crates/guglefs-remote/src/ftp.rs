@@ -667,7 +667,7 @@ fn apply_write(content: &mut Vec<u8>, offset: u64, data: &[u8]) -> EngineResult<
 fn temporary_upload_path(path: &str) -> String {
     let nonce = FTP_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let (parent, _) = split_parent(path);
-    let name = format!(".guglefs-upload-{}-{nonce}", std::process::id());
+    let name = format!("guglefs-upload-{}-{nonce}", std::process::id());
     if parent == "/" {
         format!("/{name}")
     } else {
@@ -855,9 +855,9 @@ mod tests {
     fn creates_unique_sibling_paths_for_transactional_uploads() {
         let first = temporary_upload_path("/docs/report.bin");
         let second = temporary_upload_path("/docs/report.bin");
-        assert!(first.starts_with("/docs/.guglefs-upload-"));
-        assert!(second.starts_with("/docs/.guglefs-upload-"));
+        assert!(first.starts_with("/docs/guglefs-upload-"));
+        assert!(second.starts_with("/docs/guglefs-upload-"));
         assert_ne!(first, second);
-        assert!(temporary_upload_path("/report.bin").starts_with("/.guglefs-upload-"));
+        assert!(temporary_upload_path("/report.bin").starts_with("/guglefs-upload-"));
     }
 }

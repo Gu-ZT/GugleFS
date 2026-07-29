@@ -4,6 +4,10 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-07-29
+
+- FTP/FTPS temporary uploads now use non-hidden names for compatibility with servers such as Pure-FTPd that reject leading-dot file names.
+
 ## [0.15.0] - 2026-07-29
 
 - Fixed WinFsp constrained-write and allocation-size semantics when overwriting existing files. SFTP now reads back every acknowledged write range and verifies the remote length after truncation; verification or transfer failures keep the file handle failed instead of silently producing a corrupt replacement.
