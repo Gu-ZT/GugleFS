@@ -256,9 +256,7 @@ impl MountCallbacks {
         &self,
         requested_path: String,
         create_info: CreateFileInfo,
-        security_descriptor: SecurityDescriptor,
     ) -> Result<(Arc<WinHandle>, FileInfo), NTSTATUS> {
-        let _ = security_descriptor;
         let path = self.mount.resolve_new_path(&requested_path)?;
         let directory = create_info
             .create_options
@@ -339,13 +337,9 @@ impl FileSystemInterface for MountCallbacks {
         &self,
         file_name: &U16CStr,
         create_file_info: CreateFileInfo,
-        security_descriptor: SecurityDescriptor,
+        _security_descriptor: SecurityDescriptor,
     ) -> Result<(Self::FileContext, FileInfo), NTSTATUS> {
-        self.create_new(
-            Self::path(file_name)?,
-            create_file_info,
-            security_descriptor,
-        )
+        self.create_new(Self::path(file_name)?, create_file_info)
     }
 
     fn open(
@@ -939,6 +933,7 @@ fn ntstatus(error: EngineError) -> NTSTATUS {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::memory_vfs;
     use guglefs_core::DirectoryEntry;
     use std::{
         path::PathBuf,
@@ -970,6 +965,117 @@ mod tests {
             name: name.into(),
             metadata: metadata(EntryKind::File),
         }
+    }
+
+    fn create_info(create_options: CreateOptions) -> CreateFileInfo {
+        CreateFileInfo {
+            create_options,
+            granted_access: FileAccessRights::FILE_ALL_ACCESS,
+            file_attributes: FileAttributes::NORMAL,
+            allocation_size: 0,
+        }
+    }
+
+    fn wide(value: &str) -> U16CString {
+        U16CString::from_str(value).unwrap()
+    }
+
+    #[test]
+    fn memory_backend_exercises_winfsp_file_operations() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mount = Arc::new(MountContext {
+            vfs: memory_vfs(),
+            runtime: runtime.handle().clone(),
+        });
+        let callbacks = MountCallbacks { mount };
+
+        let (directory, _) = callbacks
+            .create_new(
+                "/docs".into(),
+                create_info(CreateOptions::FILE_DIRECTORY_FILE),
+            )
+            .unwrap();
+        let (file, _) = callbacks
+            .create_new(
+                "/docs/hello.txt".into(),
+                create_info(CreateOptions::FILE_NON_DIRECTORY_FILE),
+            )
+            .unwrap();
+
+        assert_eq!(
+            callbacks
+                .write(file.clone(), b"hello", WriteMode::Normal { offset: 0 })
+                .unwrap()
+                .0,
+            5
+        );
+        callbacks.flush(file.clone()).unwrap();
+        let mut buffer = [0_u8; 16];
+        assert_eq!(callbacks.read(file.clone(), &mut buffer, 0).unwrap(), 5);
+        assert_eq!(&buffer[..5], b"hello");
+
+        let mut names = Vec::new();
+        callbacks
+            .read_directory(directory.clone(), None, |entry| {
+                let length = entry
+                    .file_name
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.file_name.len());
+                names.push(String::from_utf16(&entry.file_name[..length]).unwrap());
+                true
+            })
+            .unwrap();
+        assert_eq!(names, ["hello.txt"]);
+
+        let old_name = wide("\\docs\\hello.txt");
+        let new_name = wide("\\docs\\greeting.txt");
+        callbacks
+            .rename(
+                file.clone(),
+                old_name.as_ucstr(),
+                new_name.as_ucstr(),
+                false,
+            )
+            .unwrap();
+        callbacks.set_file_size(file.clone(), 4, false).unwrap();
+        let mut truncated = [0_u8; 8];
+        assert_eq!(callbacks.read(file.clone(), &mut truncated, 0).unwrap(), 4);
+        assert_eq!(&truncated[..4], b"hell");
+
+        callbacks
+            .set_delete(file.clone(), new_name.as_ucstr(), true)
+            .unwrap();
+        callbacks.cleanup(
+            file.clone(),
+            Some(new_name.as_ucstr()),
+            CleanupFlags::DELETE,
+        );
+        callbacks.close(file);
+
+        names.clear();
+        callbacks
+            .read_directory(directory.clone(), None, |entry| {
+                let length = entry
+                    .file_name
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.file_name.len());
+                names.push(String::from_utf16(&entry.file_name[..length]).unwrap());
+                true
+            })
+            .unwrap();
+        assert!(names.is_empty());
+        callbacks.close(directory);
+
+        assert_eq!(
+            callbacks
+                .mount
+                .block_on(callbacks.mount.vfs.getattr("/missing")),
+            Err(STATUS_OBJECT_NAME_NOT_FOUND)
+        );
     }
 
     #[test]

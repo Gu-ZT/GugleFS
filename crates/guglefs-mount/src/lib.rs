@@ -1,5 +1,7 @@
 #[cfg(unix)]
 mod fuse;
+#[cfg(test)]
+mod test_support;
 #[cfg(windows)]
 mod winfsp;
 

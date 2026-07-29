@@ -103,7 +103,7 @@
 - [x] 增加 Windows `rustfmt`、Clippy、测试和前端静态检查门禁
 - [x] 将 checkout、Node 和 pnpm Actions 升级到 Node 24 运行时，消除 Node 20 弃用告警
 - [x] 使用本地 Pure-FTPd / OpenSSH-SFTP 容器执行协议集成测试
-- [ ] 使用内存后端执行 WinFsp / FUSE 一致性测试
+- [x] 使用内存后端执行 WinFsp / FUSE 一致性测试
 - [ ] 压测大文件、海量小文件、并发读写和高延迟网络
 - [x] 建立未签名 Windows x64 NSIS 自动打包流程
 - [x] 建立 Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG 打包流程

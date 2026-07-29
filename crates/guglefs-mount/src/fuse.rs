@@ -772,6 +772,102 @@ fn errno(error: EngineError) -> Errno {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::memory_vfs;
+
+    #[test]
+    fn memory_backend_exercises_fuse_file_operations() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let callbacks = FuseCallbacks::new(memory_vfs(), runtime.handle().clone());
+        let root = INodeNo(ROOT_INODE);
+
+        let directory_path = callbacks.child_path(root, OsStr::new("docs")).unwrap();
+        callbacks
+            .block_on(callbacks.vfs.create_dir(&directory_path))
+            .unwrap();
+        let directory_inode = callbacks.inode(&directory_path).unwrap();
+        let file_path = callbacks
+            .child_path(directory_inode, OsStr::new("hello.txt"))
+            .unwrap();
+        let file = callbacks
+            .block_on(callbacks.vfs.open(
+                &file_path,
+                OpenOptions {
+                    read: true,
+                    write: true,
+                    create: true,
+                    truncate: false,
+                    append: false,
+                },
+            ))
+            .unwrap();
+        let file_inode = callbacks.inode(&file_path).unwrap();
+
+        assert_eq!(
+            callbacks
+                .block_on(callbacks.vfs.write(file, 0, b"hello".to_vec()))
+                .unwrap(),
+            5
+        );
+        callbacks.block_on(callbacks.vfs.flush(file)).unwrap();
+        assert_eq!(
+            callbacks.block_on(callbacks.vfs.read(file, 0, 16)).unwrap(),
+            b"hello"
+        );
+
+        let directory = callbacks
+            .block_on(callbacks.vfs.open_dir(&directory_path))
+            .unwrap();
+        let entries = callbacks
+            .block_on(callbacks.vfs.readdir(directory))
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "hello.txt");
+
+        let renamed_path = callbacks
+            .child_path(directory_inode, OsStr::new("greeting.txt"))
+            .unwrap();
+        callbacks
+            .block_on(callbacks.vfs.rename(&file_path, &renamed_path))
+            .unwrap();
+        callbacks
+            .inodes
+            .write()
+            .unwrap()
+            .rename_subtree(&file_path, &renamed_path);
+        assert_eq!(callbacks.path(file_inode).unwrap(), renamed_path);
+
+        callbacks
+            .block_on(callbacks.vfs.truncate(&renamed_path, 4))
+            .unwrap();
+        assert_eq!(
+            callbacks.block_on(callbacks.vfs.read(file, 0, 8)).unwrap(),
+            b"hell"
+        );
+        callbacks.block_on(callbacks.vfs.release(file)).unwrap();
+        callbacks
+            .block_on(callbacks.vfs.remove(&renamed_path, EntryKind::File))
+            .unwrap();
+        callbacks
+            .inodes
+            .write()
+            .unwrap()
+            .remove_subtree(&renamed_path);
+        assert_eq!(callbacks.path(file_inode), Err(Errno::ENOENT));
+        assert!(callbacks
+            .block_on(callbacks.vfs.readdir(directory))
+            .unwrap()
+            .is_empty());
+        callbacks
+            .block_on(callbacks.vfs.release_dir(directory))
+            .unwrap();
+
+        assert_eq!(
+            callbacks.block_on(callbacks.vfs.getattr("/missing")),
+            Err(Errno::ENOENT)
+        );
+    }
 
     #[test]
     fn inode_table_keeps_ids_stable_and_updates_renamed_subtrees() {

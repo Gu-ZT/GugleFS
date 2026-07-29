@@ -174,7 +174,7 @@ GugleFS 运行期间会创建固定且不含敏感信息的 `session-running` �
 
 ## CI 与发布
 
-推送到 `main` 后，GitHub Actions 会在 Windows、Ubuntu 和 macOS 上分别执行格式检查、Clippy、Rust 测试和前端生产构建；独立的 Ubuntu 门禁还会用允许完整文件系统变更操作的显式启动配置运行隔离 Pure-FTPd 与 OpenSSH/SFTP 容器，等待端口就绪后使用专用非 root 测试账号和临时 home 目录验证真实连接、目录、创建、范围读写、重命名、截断、刷写和删除行为，成功后才允许开始打包。Actions 自身使用兼容 Node 24 的运行时，GugleFS 构建环境仍固定为 Node 22。随后 CI 创建 `<version>+build.<run_number>` 预发布，产物包括 Windows x64 NSIS、Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG；正式 GitHub Release 会采用 release tag 作为应用版本。
+推送到 `main` 后，GitHub Actions 会在 Windows、Ubuntu 和 macOS 上分别执行格式检查、Clippy、Rust 测试和前端生产构建。平台原生测试会让 WinFsp 与 FUSE 回调层分别运行同一套内存远端场景，覆盖创建、目录列表、范围读写、重命名、截断、刷写、删除、句柄路径更新和文件系统错误映射，无需实际挂载。独立的 Ubuntu 门禁还会用允许完整文件系统变更操作的显式启动配置运行隔离 Pure-FTPd 与 OpenSSH/SFTP 容器，等待端口就绪后使用专用非 root 测试账号和临时 home 目录验证真实协议行为，成功后才允许开始打包。Actions 自身使用兼容 Node 24 的运行时，GugleFS 构建环境仍固定为 Node 22。随后 CI 创建 `<version>+build.<run_number>` 预发布，产物包括 Windows x64 NSIS、Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG；正式 GitHub Release 会采用 release tag 作为应用版本。
 
 当前源代码版本线为 `0.11.0`，对应的用户可见变更记录在 [CHANGES.md](CHANGES.md) 和 [CHANGES.zh_CN.md](CHANGES.zh_CN.md) 中。
 
