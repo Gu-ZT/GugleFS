@@ -16,8 +16,8 @@ use fuser::{
 };
 use guglefs_core::{
     ConnectionSecrets, DirectoryHandle, EngineError, EngineResult, EntryKind, FileHandle,
-    FileMetadata, MappingConfig, MountDriver, OpenOptions, RemoteFileSystem, RemoteVfs,
-    ResilientRemoteFileSystem, VirtualFileSystem,
+    FileMetadata, FileSystemSpace, MappingConfig, MountDriver, OpenOptions, RemoteFileSystem,
+    RemoteVfs, ResilientRemoteFileSystem, VirtualFileSystem,
 };
 #[cfg(feature = "remote-backends")]
 use guglefs_remote::{FtpFileSystem, SftpFileSystem, WebDavFileSystem};
@@ -476,16 +476,32 @@ impl Filesystem for FuseCallbacks {
     }
 
     fn statfs(&self, _request: &Request, _inode: INodeNo, reply: ReplyStatfs) {
-        let blocks = (1_u64 << 40) / u64::from(BLOCK_SIZE);
+        let space = match self.block_on(self.vfs.filesystem_space("/")) {
+            Ok(Some(space)) => space,
+            Ok(None) => FileSystemSpace {
+                total_bytes: 1 << 40,
+                available_bytes: 1 << 39,
+                total_files: Some(1 << 30),
+                available_files: Some(1 << 29),
+                block_size: BLOCK_SIZE,
+            },
+            Err(error) => {
+                reply.error(error);
+                return;
+            }
+        };
+        let block_size = space.block_size.max(1);
+        let blocks = space.total_bytes / u64::from(block_size);
+        let available_blocks = space.available_bytes / u64::from(block_size);
         reply.statfs(
             blocks,
-            blocks / 2,
-            blocks / 2,
-            1 << 30,
-            1 << 29,
-            BLOCK_SIZE,
+            available_blocks,
+            available_blocks,
+            space.total_files.unwrap_or(1 << 30),
+            space.available_files.unwrap_or(1 << 29),
+            block_size,
             255,
-            BLOCK_SIZE,
+            block_size,
         );
     }
 }
@@ -716,20 +732,19 @@ fn ensure_empty_mount_point(path: &Path) -> EngineResult<()> {
 }
 
 fn file_attr(inode: INodeNo, metadata: &FileMetadata, request: &Request) -> FileAttr {
-    let modified = metadata
-        .modified
-        .as_deref()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
-        .unwrap_or(UNIX_EPOCH);
+    let to_system_time = |seconds: Option<u64>| {
+        seconds
+            .map(|value| UNIX_EPOCH + Duration::from_secs(value))
+            .unwrap_or(UNIX_EPOCH)
+    };
     FileAttr {
         ino: inode,
         size: metadata.size,
         blocks: metadata.size.div_ceil(u64::from(BLOCK_SIZE)),
-        atime: modified,
-        mtime: modified,
-        ctime: modified,
-        crtime: modified,
+        atime: to_system_time(metadata.accessed),
+        mtime: to_system_time(metadata.modified),
+        ctime: to_system_time(metadata.modified),
+        crtime: to_system_time(metadata.created),
         kind: file_type(metadata.kind),
         perm: if metadata.kind == EntryKind::Directory {
             0o755

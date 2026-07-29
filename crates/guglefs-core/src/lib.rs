@@ -14,7 +14,7 @@ pub use model::{
 pub use persistence::{ConfigDocument, CONFIG_SCHEMA_VERSION};
 pub use resilience::{RemoteOperationPolicy, ResilientRemoteFileSystem};
 pub use traits::{
-    ConnectionSecrets, DirectoryEntry, EntryKind, FileMetadata, FileTimes, MountDriver,
-    RemoteFileSystem,
+    ConnectionSecrets, DirectoryEntry, EntryKind, FileMetadata, FileSystemSpace, FileTimes,
+    MountDriver, RemoteFileSystem,
 };
 pub use vfs::{DirectoryHandle, FileHandle, OpenOptions, RemoteVfs, VirtualFileSystem};

@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use tokio::{sync::Semaphore, time};
 
 use crate::{
-    DirectoryEntry, EngineError, EngineResult, FileMetadata, FileTimes, FsErrorCode,
-    RemoteFileSystem,
+    DirectoryEntry, EngineError, EngineResult, FileMetadata, FileSystemSpace, FileTimes,
+    FsErrorCode, RemoteFileSystem,
 };
 
 const DEFAULT_MAX_CONCURRENT_OPERATIONS: usize = 8;
@@ -120,6 +120,20 @@ impl<R: RemoteFileSystem + ?Sized + 'static> RemoteFileSystem for ResilientRemot
             move |remote| {
                 let path = path.clone();
                 async move { remote.metadata(&path).await }
+            },
+        )
+        .await
+    }
+
+    async fn filesystem_space(&self, path: &str) -> EngineResult<Option<FileSystemSpace>> {
+        let path = path.to_string();
+        self.execute(
+            "read filesystem space",
+            self.policy.control_timeout,
+            true,
+            move |remote| {
+                let path = path.clone();
+                async move { remote.filesystem_space(&path).await }
             },
         )
         .await
@@ -323,6 +337,8 @@ mod tests {
             Ok(FileMetadata {
                 kind: crate::EntryKind::File,
                 size: 0,
+                created: None,
+                accessed: None,
                 modified: None,
             })
         }

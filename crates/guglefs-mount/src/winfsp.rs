@@ -11,20 +11,19 @@ use std::{
 use async_trait::async_trait;
 use guglefs_core::{
     ConnectionSecrets, DirectoryHandle, EngineError, EngineResult, EntryKind, FileHandle,
-    FileMetadata, FsErrorCode, MappingConfig, MountDriver, OpenOptions, RemoteFileSystem,
-    RemoteVfs, ResilientRemoteFileSystem, VirtualFileSystem,
+    FileMetadata, FileSystemSpace, FsErrorCode, MappingConfig, MountDriver, OpenOptions,
+    RemoteFileSystem, RemoteVfs, ResilientRemoteFileSystem, VirtualFileSystem,
 };
 use guglefs_remote::{FtpFileSystem, SftpFileSystem, WebDavFileSystem};
 use tokio::runtime::Handle;
 use widestring::{U16CStr, U16CString};
 use winfsp_wrs::{
-    filetime_now, CleanupFlags, CreateFileInfo, CreateOptions, DirInfo, FileAccessRights,
-    FileAttributes, FileInfo, FileSystem, FileSystemInterface, OperationGuardStrategy, Params,
-    SecurityDescriptor, VolumeInfo, WriteMode, NTSTATUS, STATUS_ACCESS_DENIED,
-    STATUS_DIRECTORY_NOT_EMPTY, STATUS_FILE_IS_A_DIRECTORY, STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER, STATUS_IO_DEVICE_ERROR, STATUS_NAME_TOO_LONG, STATUS_NOT_A_DIRECTORY,
-    STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID,
-    STATUS_OBJECT_NAME_NOT_FOUND,
+    CleanupFlags, CreateFileInfo, CreateOptions, DirInfo, FileAccessRights, FileAttributes,
+    FileInfo, FileSystem, FileSystemInterface, OperationGuardStrategy, Params, SecurityDescriptor,
+    VolumeInfo, WriteMode, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_DIRECTORY_NOT_EMPTY,
+    STATUS_FILE_IS_A_DIRECTORY, STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER,
+    STATUS_IO_DEVICE_ERROR, STATUS_NAME_TOO_LONG, STATUS_NOT_A_DIRECTORY, STATUS_NOT_SUPPORTED,
+    STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND,
 };
 
 type DynamicVfs = RemoteVfs<dyn RemoteFileSystem>;
@@ -330,7 +329,18 @@ impl FileSystemInterface for MountCallbacks {
 
     fn get_volume_info(&self) -> Result<VolumeInfo, NTSTATUS> {
         let label = U16CString::from_str("GugleFS").map_err(|_| STATUS_INVALID_PARAMETER)?;
-        VolumeInfo::new(1 << 40, 1 << 39, label.as_ustr()).map_err(|_| STATUS_INVALID_PARAMETER)
+        let space = self
+            .mount
+            .block_on(self.mount.vfs.filesystem_space("/"))?
+            .unwrap_or(FileSystemSpace {
+                total_bytes: 1 << 40,
+                available_bytes: 1 << 39,
+                total_files: None,
+                available_files: None,
+                block_size: 4096,
+            });
+        VolumeInfo::new(space.total_bytes, space.available_bytes, label.as_ustr())
+            .map_err(|_| STATUS_INVALID_PARAMETER)
     }
 
     fn create(
@@ -885,12 +895,26 @@ fn file_info(path: &str, metadata: &FileMetadata) -> FileInfo {
     {
         attributes |= FileAttributes::HIDDEN;
     }
+    let creation = filetime_from_unix(metadata.created);
+    let access = filetime_from_unix(metadata.accessed);
+    let write = filetime_from_unix(metadata.modified);
+    let change = write;
     FileInfo::default()
         .set_file_attributes(attributes)
         .set_file_size(metadata.size)
         .set_allocation_size(metadata.size)
-        .set_time(filetime_now())
+        .set_creation_time(creation)
+        .set_last_access_time(access)
+        .set_last_write_time(write)
+        .set_change_time(change)
         .to_owned()
+}
+
+fn filetime_from_unix(seconds: Option<u64>) -> u64 {
+    seconds
+        .and_then(|value| value.checked_add(11_644_473_600))
+        .and_then(|value| value.checked_mul(10_000_000))
+        .unwrap_or(0)
 }
 
 fn existing_entry_kind(
@@ -955,6 +979,8 @@ mod tests {
         FileMetadata {
             kind,
             size: 0,
+            created: None,
+            accessed: None,
             modified: None,
         }
     }
@@ -1168,6 +1194,24 @@ mod tests {
         let directory = file_info("/docs", &metadata(EntryKind::Directory)).file_attributes();
         assert!(directory.is(FileAttributes::DIRECTORY));
         assert!(!directory.is(FileAttributes::HIDDEN));
+    }
+
+    #[test]
+    fn projects_remote_timestamps_to_windows_filetime() {
+        let metadata = FileMetadata {
+            kind: EntryKind::File,
+            size: 5,
+            created: Some(1_700_000_000),
+            accessed: Some(1_700_000_100),
+            modified: Some(1_700_000_200),
+        };
+
+        let info = file_info("/file.txt", &metadata);
+        assert_eq!(info.creation_time(), 133_444_736_000_000_000);
+        assert_eq!(info.last_access_time(), 133_444_737_000_000_000);
+        assert_eq!(info.last_write_time(), 133_444_738_000_000_000);
+        assert_eq!(info.change_time(), info.last_write_time());
+        assert_eq!(filetime_from_unix(None), 0);
     }
 
     #[test]

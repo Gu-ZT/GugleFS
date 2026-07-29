@@ -440,6 +440,8 @@ impl RemoteFileSystem for FtpFileSystem {
                         .map(|_| FileMetadata {
                             kind: EntryKind::Directory,
                             size: 0,
+                            created: None,
+                            accessed: None,
                             modified: None,
                         })
                 } else {
@@ -614,6 +616,8 @@ fn file_metadata(file: File) -> FileMetadata {
             EntryKind::File
         },
         size: file.size() as u64,
+        created: None,
+        accessed: None,
         modified: None,
     }
 }
@@ -626,6 +630,7 @@ fn parse_mlst_metadata(line: &str) -> Result<FileMetadata, &'static str> {
         .unwrap_or(facts);
     let mut kind = None;
     let mut size = 0;
+    let mut modified = None;
 
     for fact in facts.split(';').filter(|fact| !fact.is_empty()) {
         let Some((key, value)) = fact.split_once('=') else {
@@ -649,13 +654,60 @@ fn parse_mlst_metadata(line: &str) -> Result<FileMetadata, &'static str> {
             );
         } else if key.eq_ignore_ascii_case("size") {
             size = value.parse().map_err(|_| "invalid size fact")?;
+        } else if key.eq_ignore_ascii_case("modify") {
+            modified = parse_ftp_timestamp(value);
         }
     }
 
     Ok(FileMetadata {
         kind: kind.ok_or("missing type fact")?,
         size,
-        modified: None,
+        created: None,
+        accessed: None,
+        modified,
+    })
+}
+
+fn parse_ftp_timestamp(value: &str) -> Option<u64> {
+    let digits = value.split('.').next()?;
+    if digits.len() != 14 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let year = digits[0..4].parse::<i64>().ok()?;
+    let month = digits[4..6].parse::<i64>().ok()?;
+    let day = digits[6..8].parse::<i64>().ok()?;
+    let hour = digits[8..10].parse::<i64>().ok()?;
+    let minute = digits[10..12].parse::<i64>().ok()?;
+    let second = digits[12..14].parse::<i64>().ok()?;
+    if !(1..=12).contains(&month)
+        || !(1..=days_in_month(year, month)?).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let days = days_from_civil(year, month, day)?;
+    u64::try_from(days.checked_mul(86_400)? + hour * 3_600 + minute * 60 + second).ok()
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
+    let year = year.checked_sub(i64::from(month <= 2))?;
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
+}
+
+fn days_in_month(year: i64, month: i64) -> Option<i64> {
+    Some(match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        _ => return None,
     })
 }
 
@@ -699,6 +751,7 @@ mod tests {
                 .unwrap();
         assert_eq!(file.name, "readme.txt");
         assert_eq!(file.metadata.size, 12);
+        assert_eq!(file.metadata.modified, Some(1_704_164_645));
 
         let directory = parse_mlsd_entry("modify=20240102030405;type=dir; docs").unwrap();
         assert_eq!(directory.metadata.kind, EntryKind::Directory);
@@ -709,6 +762,16 @@ mod tests {
         .unwrap();
         assert_eq!(pure_ftpd.metadata.kind, EntryKind::File);
         assert_eq!(pure_ftpd.metadata.size, 12);
+    }
+
+    #[test]
+    fn ignores_invalid_machine_readable_timestamps() {
+        assert_eq!(
+            parse_ftp_timestamp("20240102030405.123"),
+            Some(1_704_164_645)
+        );
+        assert_eq!(parse_ftp_timestamp("20241302030405"), None);
+        assert_eq!(parse_ftp_timestamp("not-a-timestamp"), None);
     }
 
     #[test]

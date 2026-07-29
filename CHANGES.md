@@ -8,6 +8,9 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 - Added optional startup and manual update checks with a GitHub Releases download link and a proxy fallback when the GitHub API is unavailable.
 - Added platform-native WinFsp and FUSE callback consistency tests backed by the same in-memory remote filesystem scenario.
+- Projected available remote creation, access, and modification timestamps into WinFsp and FUSE metadata instead of substituting the current time.
+- Added real SFTP `statvfs` and WebDAV quota capacity reporting, while retaining a compatibility fallback only for protocols that do not expose filesystem space.
+- Added FTP MLST/MLSD timestamp parsing and normalized WebDAV HTTP/RFC 3339 dates to Unix time without weakening conditional writes.
 
 ## [0.11.0] - 2026-07-29
 

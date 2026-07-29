@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use diqwest::WithDigestAuth;
 use guglefs_core::{
-    AuthMethod, DirectoryEntry, EngineError, EngineResult, EntryKind, FileMetadata, FsErrorCode,
-    MappingConfig, Protocol, RemoteFileSystem, WebDavAuthMethod,
+    AuthMethod, DirectoryEntry, EngineError, EngineResult, EntryKind, FileMetadata,
+    FileSystemSpace, FsErrorCode, MappingConfig, Protocol, RemoteFileSystem, WebDavAuthMethod,
 };
 use percent_encoding::percent_decode_str;
 use quick_xml::{events::Event, Reader};
@@ -374,6 +374,10 @@ impl RemoteFileSystem for WebDavFileSystem {
         self.resource(path).await.map(|resource| resource.metadata)
     }
 
+    async fn filesystem_space(&self, path: &str) -> EngineResult<Option<FileSystemSpace>> {
+        self.resource(path).await.map(|resource| resource.space)
+    }
+
     async fn read_dir(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
         let requested = normalize_path(path);
         Ok(self
@@ -554,15 +558,20 @@ struct Resource {
     href: String,
     metadata: FileMetadata,
     etag: Option<String>,
+    modified_http: Option<String>,
+    space: Option<FileSystemSpace>,
 }
 
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
 <d:propfind xmlns:d="DAV:">
   <d:prop>
     <d:resourcetype />
-    <d:getcontentlength />
-    <d:getlastmodified />
-    <d:getetag />
+  <d:getcontentlength />
+  <d:getlastmodified />
+    <d:creationdate />
+    <d:quota-available-bytes />
+    <d:quota-used-bytes />
+  <d:getetag />
   </d:prop>
 </d:propfind>"#;
 
@@ -591,6 +600,9 @@ fn parse_propfind(body: &[u8]) -> EngineResult<Vec<Resource>> {
                 b"href" => field = Field::Href,
                 b"getcontentlength" => field = Field::Size,
                 b"getlastmodified" => field = Field::Modified,
+                b"creationdate" => field = Field::Created,
+                b"quota-available-bytes" => field = Field::QuotaAvailable,
+                b"quota-used-bytes" => field = Field::QuotaUsed,
                 b"getetag" => field = Field::Etag,
                 b"resourcetype" => field = Field::ResourceType,
                 _ => {}
@@ -609,6 +621,9 @@ fn parse_propfind(body: &[u8]) -> EngineResult<Vec<Resource>> {
                         Field::Href => resource.href = value.into_owned(),
                         Field::Size => resource.size = value.parse().unwrap_or_default(),
                         Field::Modified => resource.modified = Some(value.into_owned()),
+                        Field::Created => resource.created = parse_rfc3339(value.as_ref()),
+                        Field::QuotaAvailable => resource.quota_available = value.parse().ok(),
+                        Field::QuotaUsed => resource.quota_used = value.parse().ok(),
                         Field::Etag => resource.etag = Some(value.into_owned()),
                         Field::None | Field::ResourceType => {}
                     }
@@ -622,9 +637,21 @@ fn parse_propfind(body: &[u8]) -> EngineResult<Vec<Resource>> {
                             metadata: FileMetadata {
                                 kind: resource.kind,
                                 size: resource.size,
-                                modified: resource.modified,
+                                created: resource.created,
+                                accessed: None,
+                                modified: resource.modified.as_deref().and_then(parse_http_date),
                             },
                             etag: resource.etag,
+                            modified_http: resource.modified,
+                            space: resource.quota_available.zip(resource.quota_used).map(
+                                |(available, used)| FileSystemSpace {
+                                    total_bytes: used.saturating_add(available),
+                                    available_bytes: available,
+                                    total_files: None,
+                                    available_files: None,
+                                    block_size: 4096,
+                                },
+                            ),
                         });
                     }
                     field = Field::None;
@@ -640,12 +667,121 @@ fn parse_propfind(body: &[u8]) -> EngineResult<Vec<Resource>> {
     Ok(resources)
 }
 
+fn parse_http_date(value: &str) -> Option<u64> {
+    let parts: Vec<_> = value.split_whitespace().collect();
+    if parts.len() != 6 || !parts[5].eq_ignore_ascii_case("GMT") {
+        return None;
+    }
+    let day = parts[1].parse::<i64>().ok()?;
+    let month = match parts[2].to_ascii_lowercase().as_str() {
+        "jan" => 1,
+        "feb" => 2,
+        "mar" => 3,
+        "apr" => 4,
+        "may" => 5,
+        "jun" => 6,
+        "jul" => 7,
+        "aug" => 8,
+        "sep" => 9,
+        "oct" => 10,
+        "nov" => 11,
+        "dec" => 12,
+        _ => return None,
+    };
+    let year = parts[3].parse::<i64>().ok()?;
+    let time: Vec<_> = parts[4].split(':').collect();
+    if time.len() != 3 {
+        return None;
+    }
+    let hour = time[0].parse::<i64>().ok()?;
+    let minute = time[1].parse::<i64>().ok()?;
+    let second = time[2].parse::<i64>().ok()?;
+    unix_seconds(year, month, day, hour, minute, second, 0)
+}
+
+fn parse_rfc3339(value: &str) -> Option<u64> {
+    let (date, time) = value.trim().split_once('T')?;
+    let date: Vec<_> = date.split('-').collect();
+    if date.len() != 3 {
+        return None;
+    }
+    let year = date[0].parse::<i64>().ok()?;
+    let month = date[1].parse::<i64>().ok()?;
+    let day = date[2].parse::<i64>().ok()?;
+    let (clock, offset) = if let Some(clock) = time.strip_suffix('Z') {
+        (clock, 0_i64)
+    } else {
+        let index = time.rfind(['+', '-'])?;
+        let sign = if time.as_bytes()[index] == b'+' {
+            1
+        } else {
+            -1
+        };
+        let offset_parts: Vec<_> = time[index + 1..].split(':').collect();
+        if offset_parts.len() != 2 {
+            return None;
+        }
+        let hours = offset_parts[0].parse::<i64>().ok()?;
+        let minutes = offset_parts[1].parse::<i64>().ok()?;
+        (&time[..index], sign * (hours * 3_600 + minutes * 60))
+    };
+    let clock = clock.split('.').next().unwrap_or(clock);
+    let clock: Vec<_> = clock.split(':').collect();
+    if clock.len() != 3 {
+        return None;
+    }
+    let hour = clock[0].parse::<i64>().ok()?;
+    let minute = clock[1].parse::<i64>().ok()?;
+    let second = clock[2].parse::<i64>().ok()?;
+    unix_seconds(year, month, day, hour, minute, second, offset)
+}
+
+fn unix_seconds(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    offset: i64,
+) -> Option<u64> {
+    if !(1..=12).contains(&month)
+        || !(1..=days_in_month(year, month)?).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let year = year.checked_sub(i64::from(month <= 2))?;
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    u64::try_from(days.checked_mul(86_400)? + hour * 3_600 + minute * 60 + second - offset).ok()
+}
+
+fn days_in_month(year: i64, month: i64) -> Option<i64> {
+    Some(match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        _ => return None,
+    })
+}
+
 #[derive(Debug, Default)]
 struct ParsedResource {
     href: String,
     kind: EntryKind,
     size: u64,
     modified: Option<String>,
+    created: Option<u64>,
+    quota_available: Option<u64>,
+    quota_used: Option<u64>,
     etag: Option<String>,
 }
 
@@ -655,6 +791,9 @@ enum Field {
     Href,
     Size,
     Modified,
+    Created,
+    QuotaAvailable,
+    QuotaUsed,
     Etag,
     ResourceType,
 }
@@ -664,8 +803,7 @@ fn apply_write_condition(request: RequestBuilder, resource: &Resource) -> Reques
         return request.header(header::IF_MATCH, etag);
     }
     if let Some(modified) = resource
-        .metadata
-        .modified
+        .modified_http
         .as_deref()
         .and_then(|value| HeaderValue::from_str(value.trim()).ok())
     {
@@ -774,15 +912,19 @@ mod tests {
     #[test]
     fn parses_multistatus_resources() {
         let xml = br#"<d:multistatus xmlns:d="DAV:">
-          <d:response><d:href>/remote/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>
-          <d:response><d:href>/remote/file.txt</d:href><d:propstat><d:prop><d:getcontentlength>12</d:getcontentlength><d:getetag>&quot;version-1&quot;</d:getetag></d:prop></d:propstat></d:response>
+          <d:response><d:href>/remote/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><d:quota-used-bytes>40</d:quota-used-bytes><d:quota-available-bytes>60</d:quota-available-bytes></d:prop></d:propstat></d:response>
+          <d:response><d:href>/remote/file.txt</d:href><d:propstat><d:prop><d:getcontentlength>12</d:getcontentlength><d:creationdate>2015-10-20T07:28:00Z</d:creationdate><d:getlastmodified>Wed, 21 Oct 2015 07:28:00 GMT</d:getlastmodified><d:getetag>&quot;version-1&quot;</d:getetag></d:prop></d:propstat></d:response>
         </d:multistatus>"#;
 
         let resources = parse_propfind(xml).unwrap();
 
         assert_eq!(resources.len(), 2);
         assert_eq!(resources[0].metadata.kind, EntryKind::Directory);
+        assert_eq!(resources[0].space.unwrap().total_bytes, 100);
+        assert_eq!(resources[0].space.unwrap().available_bytes, 60);
         assert_eq!(resources[1].metadata.size, 12);
+        assert_eq!(resources[1].metadata.created, Some(1_445_326_080));
+        assert_eq!(resources[1].metadata.modified, Some(1_445_412_480));
         assert_eq!(resources[1].etag.as_deref(), Some("\"version-1\""));
     }
 
@@ -1062,9 +1204,13 @@ mod tests {
             metadata: FileMetadata {
                 kind: EntryKind::File,
                 size: 5,
-                modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".into()),
+                created: None,
+                accessed: None,
+                modified: Some(1_445_412_480),
             },
             etag: Some("W/\"version-1\"".into()),
+            modified_http: Some("Wed, 21 Oct 2015 07:28:00 GMT".into()),
+            space: None,
         };
 
         let request =

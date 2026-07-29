@@ -39,6 +39,8 @@ impl MemoryRemote {
         FileMetadata {
             kind: node.kind,
             size: node.data.len() as u64,
+            created: None,
+            accessed: None,
             modified: None,
         }
     }

@@ -10,7 +10,7 @@ use std::{
 use async_trait::async_trait;
 use guglefs_core::{
     AuthMethod, ConnectionSecrets, DirectoryEntry, EngineError, EngineResult, EntryKind,
-    FileMetadata, FsErrorCode, MappingConfig, Protocol, RemoteFileSystem,
+    FileMetadata, FileSystemSpace, FsErrorCode, MappingConfig, Protocol, RemoteFileSystem,
 };
 use russh::{
     client::{self, KeyboardInteractiveAuthResponse, Prompt},
@@ -25,6 +25,7 @@ use russh::{
 };
 use russh_sftp::{
     client::{error::Error as SftpError, fs::Metadata, SftpSession},
+    extensions::Statvfs,
     protocol::{FileAttributes, OpenFlags, StatusCode},
 };
 use tokio::{
@@ -542,6 +543,19 @@ impl RemoteFileSystem for SftpFileSystem {
         .await
     }
 
+    async fn filesystem_space(&self, path: &str) -> EngineResult<Option<FileSystemSpace>> {
+        let remote_path = self.remote_path(path);
+        self.execute("read filesystem space", true, move |sftp| {
+            let remote_path = remote_path.clone();
+            Box::pin(async move {
+                sftp.fs_info(remote_path)
+                    .await
+                    .map(|info| info.map(statvfs_space))
+            })
+        })
+        .await
+    }
+
     async fn read_dir(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
         let remote_path = self.remote_path(path);
         let vfs_path = path.to_string();
@@ -842,11 +856,28 @@ fn file_metadata(metadata: Metadata) -> FileMetadata {
             EntryKind::File
         },
         size: metadata.len(),
+        created: None,
+        accessed: metadata
+            .accessed()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs()),
         modified: metadata
             .modified()
             .ok()
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs().to_string()),
+            .map(|duration| duration.as_secs()),
+    }
+}
+
+fn statvfs_space(info: Statvfs) -> FileSystemSpace {
+    let block_size = info.fragment_size.max(1);
+    FileSystemSpace {
+        total_bytes: info.blocks.saturating_mul(block_size),
+        available_bytes: info.blocks_avail.saturating_mul(block_size),
+        total_files: Some(info.inodes),
+        available_files: Some(info.inodes_avail),
+        block_size: u32::try_from(block_size).unwrap_or(u32::MAX),
     }
 }
 
@@ -887,6 +918,29 @@ mod tests {
     fn normalizes_sftp_roots() {
         assert_eq!(normalize_root("/"), "/");
         assert_eq!(normalize_root("\\home\\user\\files\\"), "/home/user/files");
+    }
+
+    #[test]
+    fn maps_statvfs_capacity_and_inode_counts() {
+        let space = statvfs_space(Statvfs {
+            block_size: 8192,
+            fragment_size: 4096,
+            blocks: 100,
+            blocks_free: 40,
+            blocks_avail: 30,
+            inodes: 50,
+            inodes_free: 20,
+            inodes_avail: 15,
+            fs_id: 1,
+            flags: 0,
+            name_max: 255,
+        });
+
+        assert_eq!(space.total_bytes, 409_600);
+        assert_eq!(space.available_bytes, 122_880);
+        assert_eq!(space.total_files, Some(50));
+        assert_eq!(space.available_files, Some(15));
+        assert_eq!(space.block_size, 4096);
     }
 
     #[test]

@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::{
-    DirectoryEntry, EngineError, EngineResult, EntryKind, FileMetadata, FileTimes, FsErrorCode,
-    RemoteFileSystem,
+    DirectoryEntry, EngineError, EngineResult, EntryKind, FileMetadata, FileSystemSpace, FileTimes,
+    FsErrorCode, RemoteFileSystem,
 };
 
 const METADATA_CACHE_TTL: Duration = Duration::from_secs(3);
@@ -106,6 +106,7 @@ impl OpenOptions {
 pub trait VirtualFileSystem: Send + Sync {
     async fn lookup(&self, parent: &str, name: &str) -> EngineResult<DirectoryEntry>;
     async fn getattr(&self, path: &str) -> EngineResult<FileMetadata>;
+    async fn filesystem_space(&self, path: &str) -> EngineResult<Option<FileSystemSpace>>;
     async fn open(&self, path: &str, options: OpenOptions) -> EngineResult<FileHandle>;
     async fn open_dir(&self, path: &str) -> EngineResult<DirectoryHandle>;
     async fn readdir(&self, handle: DirectoryHandle) -> EngineResult<Vec<DirectoryEntry>>;
@@ -305,6 +306,10 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
         self.metadata(&normalize_path(path)?).await
     }
 
+    async fn filesystem_space(&self, path: &str) -> EngineResult<Option<FileSystemSpace>> {
+        self.remote.filesystem_space(&normalize_path(path)?).await
+    }
+
     async fn open(&self, path: &str, options: OpenOptions) -> EngineResult<FileHandle> {
         options.validate()?;
         let path = normalize_path(path)?;
@@ -321,6 +326,8 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
                 let metadata = FileMetadata {
                     kind: EntryKind::File,
                     size: 0,
+                    created: None,
+                    accessed: None,
                     modified: None,
                 };
                 self.cache_metadata(&path, CachedMetadata::Found(metadata.clone()))?;
@@ -480,6 +487,8 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
             CachedMetadata::Found(FileMetadata {
                 kind: EntryKind::Directory,
                 size: 0,
+                created: None,
+                accessed: None,
                 modified: None,
             }),
         )?;
@@ -717,7 +726,7 @@ mod tests {
     struct Node {
         kind: EntryKind,
         data: Vec<u8>,
-        modified: Option<String>,
+        modified: Option<u64>,
     }
 
     #[derive(Debug, Default)]
@@ -766,7 +775,9 @@ mod tests {
             FileMetadata {
                 kind: node.kind,
                 size: node.data.len() as u64,
-                modified: node.modified.clone(),
+                created: None,
+                accessed: None,
+                modified: node.modified,
             }
         }
     }
@@ -1054,7 +1065,7 @@ mod tests {
             "/docs/readme.txt",
             FileTimes {
                 accessed: None,
-                modified: Some("now".into()),
+                modified: Some(1_700_000_000),
             },
         )
         .await

@@ -20,7 +20,18 @@ pub enum EntryKind {
 pub struct FileMetadata {
     pub kind: EntryKind,
     pub size: u64,
-    pub modified: Option<String>,
+    pub created: Option<u64>,
+    pub accessed: Option<u64>,
+    pub modified: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileSystemSpace {
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+    pub total_files: Option<u64>,
+    pub available_files: Option<u64>,
+    pub block_size: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,8 +43,8 @@ pub struct DirectoryEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileTimes {
-    pub accessed: Option<String>,
-    pub modified: Option<String>,
+    pub accessed: Option<u64>,
+    pub modified: Option<u64>,
 }
 
 #[async_trait]
@@ -43,6 +54,10 @@ pub trait RemoteFileSystem: Send + Sync {
 
     async fn metadata(&self, _path: &str) -> EngineResult<FileMetadata> {
         Err(EngineError::NotImplemented("remote metadata".into()))
+    }
+
+    async fn filesystem_space(&self, _path: &str) -> EngineResult<Option<FileSystemSpace>> {
+        Ok(None)
     }
 
     async fn read_dir(&self, _path: &str) -> EngineResult<Vec<DirectoryEntry>> {
