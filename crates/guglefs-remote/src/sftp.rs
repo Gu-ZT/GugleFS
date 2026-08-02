@@ -1,16 +1,21 @@
 use std::{
+    collections::{HashMap, VecDeque},
     future::Future,
     io::SeekFrom,
     path::Path,
     pin::Pin,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::{Duration, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use guglefs_core::{
-    AuthMethod, ConnectionSecrets, DirectoryEntry, EngineError, EngineResult, EntryKind,
-    FileMetadata, FileSystemSpace, FsErrorCode, MappingConfig, Protocol, RemoteFileSystem,
+    AuthMethod, ConnectionSecrets, DirectoryEntry, DirectoryPage, EngineError, EngineResult,
+    EntryKind, FileMetadata, FileSystemSpace, FsErrorCode, MappingConfig, Protocol,
+    RemoteFileSystem,
 };
 use russh::{
     client::{self, KeyboardInteractiveAuthResponse, Prompt},
@@ -24,9 +29,9 @@ use russh::{
     Disconnect,
 };
 use russh_sftp::{
-    client::{error::Error as SftpError, fs::Metadata, SftpSession},
+    client::{error::Error as SftpError, fs::Metadata, RawSftpSession, SftpSession},
     extensions::Statvfs,
-    protocol::{FileAttributes, OpenFlags, StatusCode},
+    protocol::{File as SftpFile, FileAttributes, OpenFlags, StatusCode},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -37,6 +42,7 @@ use crate::proxy::{connect_target, proxy_for_target, system_proxy, ProxyConfig};
 
 const SSH_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_KEYBOARD_INTERACTIVE_ROUNDS: usize = 8;
+const SFTP_DIRECTORY_PAGE_SIZE: usize = 256;
 
 enum SftpAuth {
     Password(String),
@@ -84,6 +90,14 @@ impl client::Handler for HostKeyCapture {
 struct SftpConnection {
     ssh: client::Handle<HostKeyVerifier>,
     sftp: SftpSession,
+    directory_sftp: Option<Arc<RawSftpSession>>,
+    directory_paging_unavailable: bool,
+}
+
+struct SftpDirectoryCursor {
+    session: Arc<RawSftpSession>,
+    handle: String,
+    pending: VecDeque<SftpFile>,
 }
 
 type SftpOperation<'a, T> = Pin<Box<dyn Future<Output = Result<T, SftpError>> + Send + 'a>>;
@@ -99,6 +113,8 @@ pub struct SftpFileSystem {
     host_key_fingerprint: String,
     proxy: Option<ProxyConfig>,
     connection: Mutex<Option<SftpConnection>>,
+    next_directory_cursor: AtomicU64,
+    directory_cursors: Mutex<HashMap<u64, SftpDirectoryCursor>>,
 }
 
 impl std::fmt::Debug for SftpFileSystem {
@@ -199,6 +215,8 @@ impl SftpFileSystem {
             host_key_fingerprint,
             proxy,
             connection: Mutex::new(None),
+            next_directory_cursor: AtomicU64::new(1),
+            directory_cursors: Mutex::new(HashMap::new()),
         })
     }
 
@@ -301,7 +319,12 @@ impl SftpFileSystem {
             ));
         }
         let sftp = open_sftp_session(&mut ssh).await?;
-        Ok(SftpConnection { ssh, sftp })
+        Ok(SftpConnection {
+            ssh,
+            sftp,
+            directory_sftp: None,
+            directory_paging_unavailable: false,
+        })
     }
 
     async fn connection(
@@ -312,6 +335,7 @@ impl SftpFileSystem {
             .as_ref()
             .is_some_and(|connection| connection.ssh.is_closed())
         {
+            self.directory_cursors.lock().await.clear();
             if self.totp_required {
                 return Err(sftp_mfa_remount_required_error());
             }
@@ -374,6 +398,202 @@ impl SftpFileSystem {
         unreachable!("SFTP operations always execute at least once")
     }
 
+    fn allocate_directory_cursor(&self) -> EngineResult<u64> {
+        self.next_directory_cursor
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| EngineError::Internal("SFTP directory cursor space exhausted".into()))
+    }
+
+    async fn directory_page(
+        &self,
+        path: &str,
+        cursor: Option<&str>,
+        max_entries: usize,
+    ) -> EngineResult<DirectoryPage> {
+        let cursor_id = cursor
+            .map(|value| {
+                value.parse::<u64>().map_err(|_| {
+                    EngineError::filesystem(
+                        FsErrorCode::InvalidHandle,
+                        "invalid SFTP directory cursor",
+                    )
+                })
+            })
+            .transpose()?;
+        let (directory_sftp, paging_unavailable) = {
+            let mut connection = self.connection().await?;
+            let active = connection.as_mut().expect("SFTP connection initialized");
+            if active.directory_sftp.is_none() && !active.directory_paging_unavailable {
+                match open_raw_sftp_session(&mut active.ssh).await {
+                    Ok(session) => active.directory_sftp = Some(Arc::new(session)),
+                    Err(_) if cursor_id.is_none() => active.directory_paging_unavailable = true,
+                    Err(error) => return Err(error),
+                }
+            }
+            (
+                active.directory_sftp.clone(),
+                active.directory_paging_unavailable,
+            )
+        };
+        if paging_unavailable {
+            if cursor_id.is_some() {
+                return Err(EngineError::filesystem(
+                    FsErrorCode::InvalidHandle,
+                    "SFTP directory cursor is no longer available",
+                ));
+            }
+            return self.full_directory_page(path).await;
+        }
+        let directory_sftp = directory_sftp.expect("SFTP directory session initialized");
+
+        let mut cursors = self.directory_cursors.lock().await;
+        let cursor_id = match cursor_id {
+            Some(cursor_id) => {
+                if !cursors.contains_key(&cursor_id) {
+                    return Err(EngineError::filesystem(
+                        FsErrorCode::InvalidHandle,
+                        "SFTP directory cursor is no longer available",
+                    ));
+                }
+                cursor_id
+            }
+            None => {
+                let cursor_id = self.allocate_directory_cursor()?;
+                let handle = directory_sftp
+                    .opendir(self.remote_path(path))
+                    .await
+                    .map_err(|error| sftp_error("open directory", error))?
+                    .handle;
+                cursors.insert(
+                    cursor_id,
+                    SftpDirectoryCursor {
+                        session: Arc::clone(&directory_sftp),
+                        handle,
+                        pending: VecDeque::new(),
+                    },
+                );
+                cursor_id
+            }
+        };
+
+        let vfs_path = path.to_string();
+        let result: Result<(Vec<DirectoryEntry>, bool, String), SftpError> = async {
+            let state = cursors
+                .get_mut(&cursor_id)
+                .expect("SFTP directory cursor checked above");
+            let mut entries = Vec::with_capacity(max_entries.max(1));
+            let mut finished = false;
+            while entries.len() < max_entries.max(1) {
+                if let Some(file) = state.pending.pop_front() {
+                    if file.filename == "." || file.filename == ".." {
+                        continue;
+                    }
+                    let name = file.filename;
+                    let entry_path = if vfs_path == "/" {
+                        format!("/{name}")
+                    } else {
+                        format!("{}/{name}", vfs_path.trim_end_matches('/'))
+                    };
+                    entries.push(DirectoryEntry {
+                        path: entry_path,
+                        name,
+                        metadata: file_metadata(file.attrs),
+                    });
+                    continue;
+                }
+
+                match state.session.readdir(state.handle.clone()).await {
+                    Ok(batch) if batch.files.is_empty() => {
+                        return Err(SftpError::UnexpectedBehavior(
+                            "SFTP server returned an empty directory batch before EOF".into(),
+                        ));
+                    }
+                    Ok(batch) => state.pending.extend(batch.files),
+                    Err(SftpError::Status(status)) if status.status_code == StatusCode::Eof => {
+                        finished = true;
+                        break;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok((entries, finished, state.handle.clone()))
+        }
+        .await;
+
+        match result {
+            Ok((entries, finished, handle)) => {
+                if finished {
+                    directory_sftp
+                        .close(handle)
+                        .await
+                        .map_err(|error| sftp_error("close directory", error))?;
+                    cursors.remove(&cursor_id);
+                }
+                Ok(DirectoryPage {
+                    entries,
+                    next_cursor: (!finished).then(|| cursor_id.to_string()),
+                })
+            }
+            Err(error) => {
+                if let Some(cursor) = cursors.remove(&cursor_id) {
+                    let _ = cursor.session.close(cursor.handle).await;
+                }
+                if reconnectable_sftp_error(&error) {
+                    cursors.retain(|_, cursor| !Arc::ptr_eq(&cursor.session, &directory_sftp));
+                    drop(cursors);
+                    let mut connection = self.connection.lock().await;
+                    if connection
+                        .as_ref()
+                        .and_then(|active| active.directory_sftp.as_ref())
+                        .is_some_and(|current| Arc::ptr_eq(current, &directory_sftp))
+                    {
+                        connection
+                            .as_mut()
+                            .expect("SFTP connection initialized")
+                            .directory_sftp = None;
+                    }
+                }
+                Err(sftp_error("read directory", error))
+            }
+        }
+    }
+
+    async fn full_directory_page(&self, path: &str) -> EngineResult<DirectoryPage> {
+        let remote_path = self.remote_path(path);
+        let vfs_path = path.to_string();
+        let entries = self
+            .execute("read directory", true, move |sftp| {
+                let remote_path = remote_path.clone();
+                let vfs_path = vfs_path.clone();
+                Box::pin(async move {
+                    Ok(sftp
+                        .read_dir(remote_path)
+                        .await?
+                        .map(|entry| {
+                            let name = entry.file_name();
+                            let entry_path = if vfs_path == "/" {
+                                format!("/{name}")
+                            } else {
+                                format!("{}/{name}", vfs_path.trim_end_matches('/'))
+                            };
+                            DirectoryEntry {
+                                path: entry_path,
+                                name,
+                                metadata: file_metadata(entry.metadata()),
+                            }
+                        })
+                        .collect())
+                })
+            })
+            .await?;
+        Ok(DirectoryPage {
+            entries,
+            next_cursor: None,
+        })
+    }
+
     fn remote_path(&self, path: &str) -> String {
         let suffix = path.trim_matches('/');
         if suffix.is_empty() {
@@ -398,6 +618,27 @@ async fn open_sftp_session(ssh: &mut client::Handle<HostKeyVerifier>) -> EngineR
     let sftp = SftpSession::new(channel.into_stream())
         .await
         .map_err(|error| sftp_error("initialize session", error))?;
+    sftp.set_timeout(30);
+    Ok(sftp)
+}
+
+async fn open_raw_sftp_session(
+    ssh: &mut client::Handle<HostKeyVerifier>,
+) -> EngineResult<RawSftpSession> {
+    let channel = ssh
+        .channel_open_session()
+        .await
+        .map_err(|error| EngineError::Remote(format!("open SSH directory channel: {error}")))?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|error| {
+            EngineError::Remote(format!("request SFTP directory subsystem: {error}"))
+        })?;
+    let sftp = RawSftpSession::new(channel.into_stream());
+    sftp.init()
+        .await
+        .map_err(|error| sftp_error("initialize directory session", error))?;
     sftp.set_timeout(30);
     Ok(sftp)
 }
@@ -523,6 +764,7 @@ impl RemoteFileSystem for SftpFileSystem {
     }
 
     async fn disconnect(&self) -> EngineResult<()> {
+        self.directory_cursors.lock().await.clear();
         if let Some(connection) = self.connection.lock().await.take() {
             let _ = connection.sftp.close().await;
             connection
@@ -557,31 +799,43 @@ impl RemoteFileSystem for SftpFileSystem {
     }
 
     async fn read_dir(&self, path: &str) -> EngineResult<Vec<DirectoryEntry>> {
-        let remote_path = self.remote_path(path);
-        let vfs_path = path.to_string();
-        self.execute("read directory", true, move |sftp| {
-            let remote_path = remote_path.clone();
-            let vfs_path = vfs_path.clone();
-            Box::pin(async move {
-                let entries = sftp.read_dir(remote_path).await?;
-                Ok(entries
-                    .map(|entry| {
-                        let name = entry.file_name();
-                        let entry_path = if vfs_path == "/" {
-                            format!("/{name}")
-                        } else {
-                            format!("{}/{name}", vfs_path.trim_end_matches('/'))
-                        };
-                        DirectoryEntry {
-                            path: entry_path,
-                            name,
-                            metadata: file_metadata(entry.metadata()),
-                        }
-                    })
-                    .collect())
-            })
-        })
-        .await
+        let mut entries = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = self
+                .directory_page(path, cursor.as_deref(), SFTP_DIRECTORY_PAGE_SIZE)
+                .await?;
+            entries.extend(page.entries);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => return Ok(entries),
+            }
+        }
+    }
+
+    async fn read_dir_page(
+        &self,
+        path: &str,
+        cursor: Option<&str>,
+        max_entries: usize,
+    ) -> EngineResult<DirectoryPage> {
+        self.directory_page(path, cursor, max_entries).await
+    }
+
+    async fn close_dir_cursor(&self, cursor: &str) -> EngineResult<()> {
+        let cursor_id = cursor.parse::<u64>().map_err(|_| {
+            EngineError::filesystem(FsErrorCode::InvalidHandle, "invalid SFTP directory cursor")
+        })?;
+        let Some(state) = self.directory_cursors.lock().await.remove(&cursor_id) else {
+            return Ok(());
+        };
+        match state.session.close(state.handle).await {
+            Ok(_) => Ok(()),
+            Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => {
+                Ok(())
+            }
+            Err(error) => Err(sftp_error("close directory", error)),
+        }
     }
 
     async fn read_range(&self, path: &str, offset: u64, length: u64) -> EngineResult<Vec<u8>> {

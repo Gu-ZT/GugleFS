@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use tokio::{sync::Semaphore, time};
 
 use crate::{
-    DirectoryEntry, EngineError, EngineResult, FileMetadata, FileSystemSpace, FileTimes,
-    FsErrorCode, RemoteFileSystem,
+    DirectoryEntry, DirectoryPage, EngineError, EngineResult, FileMetadata, FileSystemSpace,
+    FileTimes, FsErrorCode, RemoteFileSystem,
 };
 
 const DEFAULT_MAX_CONCURRENT_OPERATIONS: usize = 8;
@@ -148,6 +148,46 @@ impl<R: RemoteFileSystem + ?Sized + 'static> RemoteFileSystem for ResilientRemot
             move |remote| {
                 let path = path.clone();
                 async move { remote.read_dir(&path).await }
+            },
+        )
+        .await
+    }
+
+    async fn read_dir_page(
+        &self,
+        path: &str,
+        cursor: Option<&str>,
+        max_entries: usize,
+    ) -> EngineResult<DirectoryPage> {
+        let path = path.to_string();
+        let cursor = cursor.map(str::to_owned);
+        let retryable = cursor.is_none();
+        self.execute(
+            "read directory page",
+            self.policy.control_timeout,
+            retryable,
+            move |remote| {
+                let path = path.clone();
+                let cursor = cursor.clone();
+                async move {
+                    remote
+                        .read_dir_page(&path, cursor.as_deref(), max_entries)
+                        .await
+                }
+            },
+        )
+        .await
+    }
+
+    async fn close_dir_cursor(&self, cursor: &str) -> EngineResult<()> {
+        let cursor = cursor.to_string();
+        self.execute(
+            "close directory cursor",
+            self.policy.control_timeout,
+            false,
+            move |remote| {
+                let cursor = cursor.clone();
+                async move { remote.close_dir_cursor(&cursor).await }
             },
         )
         .await

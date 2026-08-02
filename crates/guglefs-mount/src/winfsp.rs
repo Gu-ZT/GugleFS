@@ -6,6 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, RwLock,
     },
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -15,7 +16,7 @@ use guglefs_core::{
     OpenOptions, RemoteFileSystem, RemoteVfs, ResilientRemoteFileSystem, VirtualFileSystem,
 };
 use guglefs_remote::{FtpFileSystem, SftpFileSystem, WebDavFileSystem};
-use tokio::runtime::Handle;
+use tokio::{runtime::Handle, task::JoinHandle};
 use widestring::{U16CStr, U16CString};
 use winfsp_wrs::{
     CleanupFlags, CreateFileInfo, CreateOptions, DirInfo, FileAccessRights, FileAttributes,
@@ -27,6 +28,14 @@ use winfsp_wrs::{
 };
 
 type DynamicVfs = RemoteVfs<dyn RemoteFileSystem>;
+const DIRECTORY_PAGE_SIZE: usize = 256;
+const COMPATIBILITY_TOTAL_BYTES: u64 = 1 << 40;
+const COMPATIBILITY_AVAILABLE_BYTES: u64 = 1 << 39;
+const VOLUME_SPACE_CACHE_TTL: Duration = Duration::from_secs(30);
+#[cfg(not(test))]
+const VOLUME_SPACE_REFRESH_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const VOLUME_SPACE_REFRESH_DELAY: Duration = Duration::ZERO;
 
 pub struct SystemMountDriver {
     mounts: Mutex<HashMap<String, MountedFileSystem>>,
@@ -35,7 +44,7 @@ pub struct SystemMountDriver {
 struct MountedFileSystem {
     file_system: FileSystem,
     restore_empty_directory: bool,
-    root_prefetch: tokio::task::JoinHandle<()>,
+    context: Arc<MountContext>,
 }
 
 impl Default for SystemMountDriver {
@@ -56,7 +65,7 @@ impl SystemMountDriver {
         );
         let mut failures = Vec::new();
         for (mount_point, mounted) in mounts {
-            mounted.root_prefetch.abort();
+            mounted.context.abort_volume_space_refresh();
             mounted.file_system.stop();
             if let Err(error) =
                 restore_mount_directory(&mount_point, mounted.restore_empty_directory)
@@ -74,6 +83,15 @@ impl SystemMountDriver {
 struct MountContext {
     vfs: Arc<DynamicVfs>,
     runtime: Handle,
+    known_names: RwLock<HashMap<String, HashMap<String, Vec<String>>>>,
+    volume_space: RwLock<Option<CachedVolumeSpace>>,
+    volume_space_refresh: Mutex<Option<JoinHandle<()>>>,
+}
+
+#[derive(Clone, Copy)]
+struct CachedVolumeSpace {
+    value: Option<FileSystemSpace>,
+    expires_at: Instant,
 }
 
 #[derive(Clone, Copy)]
@@ -89,7 +107,22 @@ struct WinHandle {
     handle: HandleKind,
     writable: bool,
     delete_requested: AtomicBool,
-    directory_snapshot: Mutex<Option<Arc<Vec<DirectoryEntry>>>>,
+    directory_snapshot: Mutex<WinDirectorySnapshot>,
+}
+
+#[derive(Default)]
+struct WinDirectorySnapshot {
+    started: bool,
+    generation: u64,
+    complete: bool,
+    entries: Vec<DirectoryEntry>,
+    name_positions: HashMap<String, usize>,
+}
+
+enum IndexedWindowsName {
+    Unindexed,
+    Missing,
+    Found(String),
 }
 
 struct MountCallbacks {
@@ -97,6 +130,65 @@ struct MountCallbacks {
 }
 
 impl MountContext {
+    fn new(vfs: Arc<DynamicVfs>, runtime: Handle) -> Self {
+        Self {
+            vfs,
+            runtime,
+            known_names: RwLock::new(HashMap::new()),
+            volume_space: RwLock::new(None),
+            volume_space_refresh: Mutex::new(None),
+        }
+    }
+
+    fn volume_space(self: &Arc<Self>) -> Result<FileSystemSpace, NTSTATUS> {
+        let cached = *self
+            .volume_space
+            .read()
+            .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+        if cached.is_none_or(|space| space.expires_at <= Instant::now()) {
+            self.start_volume_space_refresh()?;
+        }
+        Ok(cached
+            .and_then(|space| space.value)
+            .unwrap_or(FileSystemSpace {
+                total_bytes: COMPATIBILITY_TOTAL_BYTES,
+                available_bytes: COMPATIBILITY_AVAILABLE_BYTES,
+                total_files: None,
+                available_files: None,
+                block_size: 4096,
+            }))
+    }
+
+    fn start_volume_space_refresh(self: &Arc<Self>) -> Result<(), NTSTATUS> {
+        let mut refresh = self
+            .volume_space_refresh
+            .lock()
+            .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+        if refresh.as_ref().is_some_and(|task| !task.is_finished()) {
+            return Ok(());
+        }
+
+        let context = Arc::clone(self);
+        *refresh = Some(self.runtime.spawn(async move {
+            tokio::time::sleep(VOLUME_SPACE_REFRESH_DELAY).await;
+            if let Ok(value) = context.vfs.filesystem_space("/").await {
+                if let Ok(mut cached) = context.volume_space.write() {
+                    *cached = Some(CachedVolumeSpace {
+                        value,
+                        expires_at: Instant::now() + VOLUME_SPACE_CACHE_TTL,
+                    });
+                }
+            }
+        }));
+        Ok(())
+    }
+
+    fn abort_volume_space_refresh(&self) {
+        if let Ok(Some(task)) = self.volume_space_refresh.lock().map(|mut task| task.take()) {
+            task.abort();
+        }
+    }
+
     fn block_on<T>(&self, future: impl Future<Output = EngineResult<T>>) -> Result<T, NTSTATUS> {
         self.runtime.block_on(future).map_err(ntstatus)
     }
@@ -115,8 +207,92 @@ impl MountContext {
         let entries = self.block_on(self.vfs.readdir(handle));
         let release = self.block_on(self.vfs.release_dir(handle));
         match (entries, release) {
-            (Ok(entries), Ok(())) => Ok(entries),
+            (Ok(entries), Ok(())) => {
+                self.remember_directory_entries(path, &entries)?;
+                Ok(entries)
+            }
             (Err(error), _) | (_, Err(error)) => Err(error),
+        }
+    }
+
+    fn remember_directory_entries(
+        &self,
+        directory: &str,
+        entries: &[DirectoryEntry],
+    ) -> Result<(), NTSTATUS> {
+        let mut directories = self
+            .known_names
+            .write()
+            .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+        let names = directories.entry(directory.into()).or_default();
+        for entry in entries {
+            remember_windows_name(names, &entry.name);
+        }
+        Ok(())
+    }
+
+    fn begin_directory_enumeration(&self, directory: &str) -> Result<(), NTSTATUS> {
+        self.known_names
+            .write()
+            .map_err(|_| STATUS_IO_DEVICE_ERROR)?
+            .entry(directory.into())
+            .or_default();
+        Ok(())
+    }
+
+    fn remember_path(&self, path: &str) -> Result<(), NTSTATUS> {
+        let Some((parent, name)) = split_vfs_path(path) else {
+            return Ok(());
+        };
+        let mut directories = self
+            .known_names
+            .write()
+            .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+        remember_windows_name(directories.entry(parent.into()).or_default(), name);
+        Ok(())
+    }
+
+    fn forget_path(&self, path: &str) -> Result<(), NTSTATUS> {
+        let Some((parent, name)) = split_vfs_path(path) else {
+            return Ok(());
+        };
+        let mut directories = self
+            .known_names
+            .write()
+            .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+        if let Some(names) = directories.get_mut(parent) {
+            let key = windows_name_key(name);
+            if let Some(candidates) = names.get_mut(&key) {
+                candidates.retain(|candidate| candidate != name);
+                if candidates.is_empty() {
+                    names.remove(&key);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn known_windows_name(
+        &self,
+        directory: &str,
+        requested: &str,
+    ) -> Result<IndexedWindowsName, NTSTATUS> {
+        let directories = self
+            .known_names
+            .read()
+            .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+        let Some(names) = directories.get(directory) else {
+            return Ok(IndexedWindowsName::Unindexed);
+        };
+        let Some(candidates) = names.get(&windows_name_key(requested)) else {
+            return Ok(IndexedWindowsName::Missing);
+        };
+        if let Some(exact) = candidates.iter().find(|candidate| *candidate == requested) {
+            return Ok(IndexedWindowsName::Found(exact.clone()));
+        }
+        match candidates.as_slice() {
+            [name] => Ok(IndexedWindowsName::Found(name.clone())),
+            _ => Err(STATUS_OBJECT_NAME_COLLISION),
         }
     }
 
@@ -124,19 +300,19 @@ impl MountContext {
         if requested == "/" {
             return Ok("/".into());
         }
-        match self.metadata(requested) {
-            Ok(_) => return Ok(requested.into()),
-            Err(status) if status == STATUS_OBJECT_NAME_NOT_FOUND => {}
-            Err(status) => return Err(status),
-        }
-
         let mut resolved = "/".to_string();
         for component in requested.trim_start_matches('/').split('/') {
-            let entries = self.directory_entries(&resolved)?;
-            let name =
-                matching_windows_name(component, &entries)?.ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
-            resolved = join_vfs_path(&resolved, name);
+            match self.known_windows_name(&resolved, component)? {
+                IndexedWindowsName::Found(name) => {
+                    resolved = join_vfs_path(&resolved, &name);
+                }
+                IndexedWindowsName::Missing => return Err(STATUS_OBJECT_NAME_NOT_FOUND),
+                IndexedWindowsName::Unindexed => {
+                    return self.metadata(requested).map(|_| requested.into())
+                }
+            }
         }
+        self.metadata(&resolved)?;
         Ok(resolved)
     }
 
@@ -249,7 +425,7 @@ impl MountCallbacks {
                 handle,
                 writable,
                 delete_requested: AtomicBool::new(false),
-                directory_snapshot: Mutex::new(None),
+                directory_snapshot: Mutex::new(WinDirectorySnapshot::default()),
             }),
             info,
         ))
@@ -282,6 +458,7 @@ impl MountCallbacks {
             HandleKind::File(file_handle)
         };
         let metadata = self.mount.metadata(&path)?;
+        let _ = self.mount.remember_path(&path);
         let info = file_info(&path, &metadata);
         Ok((
             Arc::new(WinHandle {
@@ -295,7 +472,7 @@ impl MountCallbacks {
                 handle,
                 writable: true,
                 delete_requested: AtomicBool::new(false),
-                directory_snapshot: Mutex::new(None),
+                directory_snapshot: Mutex::new(WinDirectorySnapshot::default()),
             }),
             info,
         ))
@@ -334,16 +511,7 @@ impl FileSystemInterface for MountCallbacks {
 
     fn get_volume_info(&self) -> Result<VolumeInfo, NTSTATUS> {
         let label = U16CString::from_str("GugleFS").map_err(|_| STATUS_INVALID_PARAMETER)?;
-        let space = self
-            .mount
-            .block_on(self.mount.vfs.filesystem_space("/"))?
-            .unwrap_or(FileSystemSpace {
-                total_bytes: 1 << 40,
-                available_bytes: 1 << 39,
-                total_files: None,
-                available_files: None,
-                block_size: 4096,
-            });
+        let space = self.mount.volume_space()?;
         VolumeInfo::new(space.total_bytes, space.available_bytes, label.as_ustr())
             .map_err(|_| STATUS_INVALID_PARAMETER)
     }
@@ -389,9 +557,12 @@ impl FileSystemInterface for MountCallbacks {
     ) {
         if flags.is(CleanupFlags::DELETE) || file_context.delete_requested.load(Ordering::Acquire) {
             if let Ok(path) = Self::context_path(&file_context) {
-                let _ = file_context
+                let removed = file_context
                     .mount
                     .block_on(file_context.mount.vfs.remove(&path, file_context.kind));
+                if removed.is_ok() {
+                    let _ = file_context.mount.forget_path(&path);
+                }
             }
         }
     }
@@ -542,6 +713,8 @@ impl FileSystemInterface for MountCallbacks {
         file_context
             .mount
             .block_on(file_context.mount.vfs.rename(&source, &target))?;
+        let _ = file_context.mount.forget_path(&source);
+        let _ = file_context.mount.remember_path(&target);
         *file_context
             .path
             .write()
@@ -558,44 +731,100 @@ impl FileSystemInterface for MountCallbacks {
         let HandleKind::Directory(handle) = file_context.handle else {
             return Err(STATUS_NOT_A_DIRECTORY);
         };
-        let entries = {
+        let directory_path = Self::context_path(&file_context)?;
+        let _ = file_context
+            .mount
+            .begin_directory_enumeration(&directory_path);
+        let marker = marker.map(|value| windows_name_key(&value.to_string_lossy()));
+
+        let generation = file_context.mount.vfs.directory_generation();
+        let refresh = {
             let mut snapshot = file_context
                 .directory_snapshot
                 .lock()
                 .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
-            if marker.is_none() || snapshot.is_none() {
-                let mut entries = file_context
-                    .mount
-                    .block_on(file_context.mount.vfs.readdir(handle))?;
-                entries.retain(|entry| validate_windows_component(&entry.name).is_ok());
-                entries.sort_by(|left, right| {
-                    windows_name_key(&left.name)
-                        .cmp(&windows_name_key(&right.name))
-                        .then_with(|| left.name.cmp(&right.name))
-                });
-                entries.dedup_by(|left, right| {
-                    windows_name_key(&left.name) == windows_name_key(&right.name)
-                });
-                *snapshot = Some(Arc::new(entries));
+            if !snapshot.started {
+                snapshot.started = true;
+                snapshot.generation = generation;
+                false
+            } else {
+                marker.is_none() && snapshot.generation != generation
             }
-            Arc::clone(snapshot.as_ref().expect("directory snapshot initialized"))
         };
-        let marker = marker.map(|value| windows_name_key(&value.to_string_lossy()));
-        for entry in entries.iter() {
-            if marker
-                .as_deref()
-                .is_some_and(|value| windows_name_key(&entry.name).as_str() <= value)
-            {
-                continue;
-            }
-            if !add_dir_info(DirInfo::from_str(
-                file_info(&entry.path, &entry.metadata),
-                &entry.name,
-            )) {
-                break;
-            }
+        if refresh {
+            file_context
+                .mount
+                .block_on(file_context.mount.vfs.rewind_dir(handle))?;
+            let mut snapshot = file_context
+                .directory_snapshot
+                .lock()
+                .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+            *snapshot = WinDirectorySnapshot {
+                started: true,
+                generation,
+                ..WinDirectorySnapshot::default()
+            };
         }
-        Ok(())
+
+        let mut index = {
+            let snapshot = file_context
+                .directory_snapshot
+                .lock()
+                .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+            marker
+                .as_ref()
+                .and_then(|marker| snapshot.name_positions.get(marker).copied())
+                .map_or(0, |position| position + 1)
+        };
+
+        loop {
+            let (complete, exhausted) = {
+                let snapshot = file_context
+                    .directory_snapshot
+                    .lock()
+                    .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+                while index < snapshot.entries.len() {
+                    let entry = &snapshot.entries[index];
+                    if !add_dir_info(DirInfo::from_str(
+                        file_info(&entry.path, &entry.metadata),
+                        &entry.name,
+                    )) {
+                        return Ok(());
+                    }
+                    index += 1;
+                }
+                (snapshot.complete, index == snapshot.entries.len())
+            };
+            if complete {
+                return Ok(());
+            }
+            debug_assert!(exhausted);
+
+            let page = file_context.mount.block_on(
+                file_context
+                    .mount
+                    .vfs
+                    .readdir_page(handle, DIRECTORY_PAGE_SIZE),
+            )?;
+            let _ = file_context
+                .mount
+                .remember_directory_entries(&directory_path, &page.entries);
+            let mut snapshot = file_context
+                .directory_snapshot
+                .lock()
+                .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
+            for entry in page.entries {
+                let name_key = windows_name_key(&entry.name);
+                if validate_windows_component(&entry.name).is_ok()
+                    && !snapshot.name_positions.contains_key(&name_key)
+                {
+                    let position = snapshot.entries.len();
+                    snapshot.name_positions.insert(name_key, position);
+                    snapshot.entries.push(entry);
+                }
+            }
+            snapshot.complete = !page.has_more;
+        }
     }
 
     fn set_delete(
@@ -639,7 +868,7 @@ impl MountDriver for SystemMountDriver {
         let runtime = Handle::try_current().map_err(|error| {
             EngineError::Internal(format!("mount must run inside a Tokio runtime: {error}"))
         })?;
-        let context = Arc::new(MountContext { vfs, runtime });
+        let context = Arc::new(MountContext::new(vfs, runtime));
         winfsp_wrs::init().map_err(|error| {
             EngineError::Mount(format!(
                 "WinFsp is not installed or its DLL could not be loaded: {error}"
@@ -667,6 +896,7 @@ impl MountDriver for SystemMountDriver {
             },
         )
         .map_err(|status| {
+            context.abort_volume_space_refresh();
             let _ = restore_mount_directory(&mount_point, restore_empty_directory);
             if status == STATUS_OBJECT_NAME_COLLISION {
                 EngineError::Mount(format!(
@@ -676,25 +906,17 @@ impl MountDriver for SystemMountDriver {
                 EngineError::Mount(format!("WinFsp mount failed: 0x{status:08X}"))
             }
         })?;
-        let root_vfs = Arc::clone(&context.vfs);
-        let root_prefetch = context.runtime.spawn(async move {
-            if let Ok(handle) = root_vfs.open_dir("/").await {
-                let _ = root_vfs.readdir(handle).await;
-                let _ = root_vfs.release_dir(handle).await;
-            }
-        });
-
         let mut mounts = match self.mounts.lock() {
             Ok(mounts) => mounts,
             Err(error) => {
-                root_prefetch.abort();
+                context.abort_volume_space_refresh();
                 file_system.stop();
                 let _ = restore_mount_directory(&mount_point, restore_empty_directory);
                 return Err(EngineError::Internal(error.to_string()));
             }
         };
         if mounts.contains_key(&mount_point) {
-            root_prefetch.abort();
+            context.abort_volume_space_refresh();
             file_system.stop();
             let _ = restore_mount_directory(&mount_point, restore_empty_directory);
             return Err(EngineError::AlreadyMounted(mount_point));
@@ -704,7 +926,7 @@ impl MountDriver for SystemMountDriver {
             MountedFileSystem {
                 file_system,
                 restore_empty_directory,
-                root_prefetch,
+                context,
             },
         );
         Ok(())
@@ -718,7 +940,7 @@ impl MountDriver for SystemMountDriver {
             .map_err(|error| EngineError::Internal(error.to_string()))?
             .remove(&mount_point)
             .ok_or_else(|| EngineError::NotMounted(mount_point.clone()))?;
-        mounted.root_prefetch.abort();
+        mounted.context.abort_volume_space_refresh();
         mounted.file_system.stop();
         restore_mount_directory(&mount_point, mounted.restore_empty_directory)?;
         Ok(())
@@ -890,6 +1112,13 @@ fn windows_name_key(name: &str) -> String {
     name.to_lowercase()
 }
 
+fn remember_windows_name(names: &mut HashMap<String, Vec<String>>, name: &str) {
+    let candidates = names.entry(windows_name_key(name)).or_default();
+    if !candidates.iter().any(|candidate| candidate == name) {
+        candidates.push(name.into());
+    }
+}
+
 fn matching_windows_name<'a>(
     requested: &str,
     entries: &'a [guglefs_core::DirectoryEntry],
@@ -1000,11 +1229,96 @@ fn ntstatus(error: EngineError) -> NTSTATUS {
 mod tests {
     use super::*;
     use crate::test_support::memory_vfs;
-    use guglefs_core::DirectoryEntry;
+    use guglefs_core::{DirectoryEntry, DirectoryPage};
     use std::{
         path::PathBuf,
+        sync::atomic::AtomicUsize,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[derive(Default)]
+    struct PagedDirectoryRemote {
+        metadata_reads: AtomicUsize,
+        filesystem_space_reads: AtomicUsize,
+        page_reads: AtomicUsize,
+        full_reads: AtomicUsize,
+        cursors_closed: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl RemoteFileSystem for PagedDirectoryRemote {
+        async fn connect(&self) -> EngineResult<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> EngineResult<()> {
+            Ok(())
+        }
+
+        async fn metadata(&self, path: &str) -> EngineResult<FileMetadata> {
+            self.metadata_reads.fetch_add(1, Ordering::Relaxed);
+            if path == "/" {
+                return Ok(metadata(EntryKind::Directory));
+            }
+            let exists = path
+                .strip_prefix("/file-")
+                .and_then(|value| value.strip_suffix(".txt"))
+                .and_then(|value| value.parse::<usize>().ok())
+                .is_some_and(|index| index < 1_000);
+            if exists {
+                return Ok(metadata(EntryKind::File));
+            }
+            Err(EngineError::filesystem(FsErrorCode::NotFound, path))
+        }
+
+        async fn filesystem_space(&self, _path: &str) -> EngineResult<Option<FileSystemSpace>> {
+            self.filesystem_space_reads.fetch_add(1, Ordering::Relaxed);
+            Ok(Some(FileSystemSpace {
+                total_bytes: 200,
+                available_bytes: 80,
+                total_files: None,
+                available_files: None,
+                block_size: 4096,
+            }))
+        }
+
+        async fn read_dir(&self, _path: &str) -> EngineResult<Vec<DirectoryEntry>> {
+            self.full_reads.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+
+        async fn read_dir_page(
+            &self,
+            _path: &str,
+            cursor: Option<&str>,
+            max_entries: usize,
+        ) -> EngineResult<DirectoryPage> {
+            const ENTRY_COUNT: usize = 1_000;
+
+            self.page_reads.fetch_add(1, Ordering::Relaxed);
+            let start = cursor
+                .unwrap_or("0")
+                .parse::<usize>()
+                .map_err(|_| EngineError::filesystem(FsErrorCode::InvalidHandle, "cursor"))?;
+            let end = start.saturating_add(max_entries).min(ENTRY_COUNT);
+            let entries = (start..end)
+                .map(|index| DirectoryEntry {
+                    path: format!("/file-{index:04}.txt"),
+                    name: format!("file-{index:04}.txt"),
+                    metadata: metadata(EntryKind::File),
+                })
+                .collect();
+            Ok(DirectoryPage {
+                entries,
+                next_cursor: (end < ENTRY_COUNT).then(|| end.to_string()),
+            })
+        }
+
+        async fn close_dir_cursor(&self, _cursor: &str) -> EngineResult<()> {
+            self.cursors_closed.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
 
     fn temporary_mount_point(test_name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -1053,10 +1367,7 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let mount = Arc::new(MountContext {
-            vfs: memory_vfs(),
-            runtime: runtime.handle().clone(),
-        });
+        let mount = Arc::new(MountContext::new(memory_vfs(), runtime.handle().clone()));
         let callbacks = MountCallbacks { mount };
 
         let (directory, _) = callbacks
@@ -1177,10 +1488,7 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let mount = Arc::new(MountContext {
-            vfs: memory_vfs(),
-            runtime: runtime.handle().clone(),
-        });
+        let mount = Arc::new(MountContext::new(memory_vfs(), runtime.handle().clone()));
         let callbacks = MountCallbacks { mount };
         let (file, _) = callbacks
             .create_new(
@@ -1241,10 +1549,7 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let mount = Arc::new(MountContext {
-            vfs: memory_vfs(),
-            runtime: runtime.handle().clone(),
-        });
+        let mount = Arc::new(MountContext::new(memory_vfs(), runtime.handle().clone()));
         let callbacks = MountCallbacks { mount };
         let (directory, _) = callbacks
             .create_new(
@@ -1311,6 +1616,142 @@ mod tests {
         callbacks.close(first_file);
         callbacks.close(second_file);
         callbacks.close(directory);
+    }
+
+    #[test]
+    fn large_directory_stops_after_the_first_remote_page() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let remote = Arc::new(PagedDirectoryRemote::default());
+        let dynamic_remote: Arc<dyn RemoteFileSystem> = remote.clone();
+        let vfs = Arc::new(RemoteVfs::new(dynamic_remote));
+        let mount = Arc::new(MountContext::new(vfs, runtime.handle().clone()));
+        let handle = mount.block_on(mount.vfs.open_dir("/")).unwrap();
+        let directory = Arc::new(WinHandle {
+            mount: Arc::clone(&mount),
+            path: RwLock::new("/".into()),
+            kind: EntryKind::Directory,
+            handle: HandleKind::Directory(handle),
+            writable: false,
+            delete_requested: AtomicBool::new(false),
+            directory_snapshot: Mutex::new(WinDirectorySnapshot::default()),
+        });
+        let callbacks = MountCallbacks { mount };
+
+        assert_eq!(
+            callbacks.mount.resolve_existing_path("/desktop.ini"),
+            Err(STATUS_OBJECT_NAME_NOT_FOUND)
+        );
+        assert_eq!(remote.full_reads.load(Ordering::Relaxed), 0);
+
+        let mut names = Vec::new();
+        callbacks
+            .read_directory(directory.clone(), None, |entry| {
+                let length = entry
+                    .file_name
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.file_name.len());
+                names.push(String::from_utf16(&entry.file_name[..length]).unwrap());
+                false
+            })
+            .unwrap();
+
+        assert_eq!(names, ["file-0000.txt"]);
+        assert_eq!(remote.page_reads.load(Ordering::Relaxed), 1);
+        let metadata_reads = remote.metadata_reads.load(Ordering::Relaxed);
+        assert_eq!(
+            callbacks.mount.resolve_existing_path("/thumbs.db"),
+            Err(STATUS_OBJECT_NAME_NOT_FOUND)
+        );
+        assert_eq!(
+            remote.metadata_reads.load(Ordering::Relaxed),
+            metadata_reads
+        );
+        assert_eq!(
+            callbacks
+                .mount
+                .resolve_existing_path("/FILE-0000.TXT")
+                .unwrap(),
+            "/file-0000.txt"
+        );
+        assert_eq!(remote.full_reads.load(Ordering::Relaxed), 0);
+
+        let mut restarted = Vec::new();
+        callbacks
+            .read_directory(directory.clone(), None, |entry| {
+                let length = entry
+                    .file_name
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.file_name.len());
+                restarted.push(String::from_utf16(&entry.file_name[..length]).unwrap());
+                false
+            })
+            .unwrap();
+        assert_eq!(restarted, ["file-0000.txt"]);
+        assert_eq!(remote.page_reads.load(Ordering::Relaxed), 1);
+
+        let snapshot = directory.directory_snapshot.lock().unwrap();
+        assert_eq!(snapshot.entries.len(), DIRECTORY_PAGE_SIZE);
+        assert!(!snapshot.complete);
+        drop(snapshot);
+
+        callbacks.close(directory);
+        assert_eq!(remote.cursors_closed.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn volume_info_returns_immediately_and_refreshes_capacity_once() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let remote = Arc::new(PagedDirectoryRemote::default());
+        let aborted_remote: Arc<dyn RemoteFileSystem> = remote.clone();
+        let aborted_mount = Arc::new(MountContext::new(
+            Arc::new(RemoteVfs::new(aborted_remote)),
+            runtime.handle().clone(),
+        ));
+        let aborted_callbacks = MountCallbacks {
+            mount: Arc::clone(&aborted_mount),
+        };
+        aborted_callbacks.get_volume_info().unwrap();
+        aborted_mount.abort_volume_space_refresh();
+        runtime.block_on(async { tokio::task::yield_now().await });
+        assert_eq!(remote.filesystem_space_reads.load(Ordering::Relaxed), 0);
+
+        let dynamic_remote: Arc<dyn RemoteFileSystem> = remote.clone();
+        let mount = Arc::new(MountContext::new(
+            Arc::new(RemoteVfs::new(dynamic_remote)),
+            runtime.handle().clone(),
+        ));
+        let callbacks = MountCallbacks {
+            mount: Arc::clone(&mount),
+        };
+
+        callbacks.get_volume_info().unwrap();
+        callbacks.get_volume_info().unwrap();
+        assert_eq!(remote.filesystem_space_reads.load(Ordering::Relaxed), 0);
+
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if remote.filesystem_space_reads.load(Ordering::Relaxed) == 1 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        });
+        assert_eq!(remote.filesystem_space_reads.load(Ordering::Relaxed), 1);
+        assert_eq!(mount.volume_space().unwrap().total_bytes, 200);
+        callbacks.get_volume_info().unwrap();
+        assert_eq!(remote.filesystem_space_reads.load(Ordering::Relaxed), 1);
+        mount.abort_volume_space_refresh();
     }
 
     #[test]

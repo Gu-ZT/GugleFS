@@ -4,6 +4,12 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-02
+
+- Large SFTP directories now use cursor-based linear pagination. WinFsp and FUSE return the first available page without waiting for the complete directory, reuse stable per-handle snapshots, and clean up interrupted cursors; mount-time root prefetch no longer competes with foreground browsing. Longer bounded metadata caches reduce repeated property and thumbnail requests.
+- Explorer metadata probes use the active directory name view instead of issuing serial SFTP metadata requests. Repeated enumeration restarts on one WinFsp handle reuse the existing snapshot and remote cursor while the directory is unchanged, and successful local create, remove, or rename operations refresh that snapshot. Directory paging no longer holds the main SFTP connection lock while waiting for the dedicated `READDIR` channel, so foreground metadata and file operations can continue concurrently.
+- WinFsp volume information now returns a cached or compatibility capacity immediately and refreshes SFTP `statvfs` or WebDAV quota data asynchronously; Unix mounts retain cached remote capacity reporting.
+
 ## [0.15.1] - 2026-07-29
 
 - FTP/FTPS temporary uploads now use non-hidden names for compatibility with servers such as Pure-FTPd that reject leading-dot file names.

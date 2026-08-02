@@ -19,6 +19,7 @@
 - [x] 将平台适配层一致性测试、应用更新检查以及远端元数据投影整理为 0.12.0 版本
 - [x] 将远端元数据查询性能优化整理为 0.13.0 版本
 - [x] 将根目录预取、并发目录读取合并和 WinFsp 稳定分页快照整理为 0.14.0 版本
+- [x] 将 SFTP 游标分页、WinFsp/FUSE 大目录增量枚举及 Explorer 探测优化整理为 0.16.0 版本
 
 ## P1：核心文件系统语义
 
@@ -27,6 +28,7 @@
 - [x] 建立统一错误码，将远端错误映射为 POSIX / Windows 文件系统错误
 - [x] 定义统一的创建/访问/修改时间与文件系统空间元数据，通过韧性层转发并缓存空间查询
 - [x] 定义文件句柄、目录句柄与并发访问生命周期
+- [x] 为目录句柄增加有界分页、远端游标续读、完整快照缓存和中断清理语义
 - [x] 实现有界 TTL 元数据缓存、目录缓存和负缓存
 - [x] 实现按打开文件隔离的顺序预读，并在写入后使旧预读数据失效
 - [x] 设计分块写入、写回与失败恢复策略（实施门槛见 [WRITE_STRATEGY.zh_CN.md](docs/WRITE_STRATEGY.zh_CN.md)，当前仍保持写穿语义）
@@ -48,6 +50,7 @@
 - [x] SFTP：支持需要 MFA 的手动连接测试和挂载，TOTP 验证码仅用于当前请求且不持久化
 - [x] SFTP：支持 Unix `SSH_AUTH_SOCK`、Windows OpenSSH 命名管道和 Pageant SSH Agent
 - [x] SFTP：实现 SHA-256 主机指纹固定和首次连接确认流程
+- [x] SFTP：使用低层 `READDIR` 游标线性分页，避免大目录完整读取中的二次方复制
 - [x] SFTP：支持导入 OpenSSH `known_hosts`，并用服务器当前密钥校验普通、哈希主机名及非标准端口条目
 - [x] WebDAV：接入 Rust HTTPS/WebDAV 客户端基础依赖，首个版本仅允许 HTTPS
 - [x] WebDAV：实现 `PROPFIND`、`GET`、`PUT`、`MKCOL`、`MOVE` 和 `DELETE` 基础请求
@@ -71,7 +74,10 @@
 - [x] Windows：实现盘符/目录挂载、占用检测和安全卸载
 - [x] Windows：恢复空目录挂载点并清理失效的 WinFsp 目录 reparse point
 - [x] Windows：实现大小写不敏感查找、保留远端拼写、大小写冲突检测和 Windows 文件名校验
+- [x] Windows：使用已枚举名称索引处理 Shell 元数据探测，避免未知名称触发完整父目录扫描
+- [x] Windows：卷容量回调立即返回缓存或兼容值，并异步刷新远端容量
 - [x] Windows：投影目录、隐藏文件和归档文件基础属性
+- [x] Windows / Linux / macOS：按挂载回调缓冲区增量枚举大目录，并在目录句柄内保留稳定快照
 - [x] Windows / Linux / macOS：投影远端可用时间戳，并在协议支持时报告真实容量和剩余空间
 - [ ] Windows：在不支持原生属性的远端持久化可变 Windows 文件属性和时间戳
 - [x] Linux：接入 FUSE3，完成挂载、卸载和基础权限映射

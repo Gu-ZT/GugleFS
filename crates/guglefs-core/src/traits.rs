@@ -41,6 +41,12 @@ pub struct DirectoryEntry {
     pub metadata: FileMetadata,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryPage {
+    pub entries: Vec<DirectoryEntry>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileTimes {
     pub accessed: Option<u64>,
@@ -64,6 +70,27 @@ pub trait RemoteFileSystem: Send + Sync {
         Err(EngineError::NotImplemented(
             "remote directory listing".into(),
         ))
+    }
+
+    async fn read_dir_page(
+        &self,
+        path: &str,
+        cursor: Option<&str>,
+        _max_entries: usize,
+    ) -> EngineResult<DirectoryPage> {
+        if cursor.is_some() {
+            return Err(EngineError::InvalidConfig(
+                "remote directory cursor is no longer valid".into(),
+            ));
+        }
+        Ok(DirectoryPage {
+            entries: self.read_dir(path).await?,
+            next_cursor: None,
+        })
+    }
+
+    async fn close_dir_cursor(&self, _cursor: &str) -> EngineResult<()> {
+        Ok(())
     }
 
     async fn read_range(&self, _path: &str, _offset: u64, _length: u64) -> EngineResult<Vec<u8>> {

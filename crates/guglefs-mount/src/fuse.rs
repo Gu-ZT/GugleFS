@@ -25,6 +25,7 @@ use tokio::runtime::Handle;
 
 const ATTR_TTL: Duration = Duration::from_secs(1);
 const BLOCK_SIZE: u32 = 4096;
+const DIRECTORY_PAGE_SIZE: usize = 256;
 const ROOT_INODE: u64 = 1;
 
 type DynamicVfs = RemoteVfs<dyn RemoteFileSystem>;
@@ -35,7 +36,6 @@ pub struct SystemMountDriver {
 
 struct MountedFuse {
     session: fuser::BackgroundSession,
-    root_prefetch: tokio::task::JoinHandle<()>,
 }
 
 impl Default for SystemMountDriver {
@@ -56,7 +56,6 @@ impl SystemMountDriver {
         );
         let mut failures = Vec::new();
         for (mount_point, mounted) in sessions {
-            mounted.root_prefetch.abort();
             if let Err(error) = mounted.session.umount_and_join() {
                 failures.push(format!("{}: {error}", mount_point.display()));
             }
@@ -76,6 +75,13 @@ struct FuseCallbacks {
     vfs: Arc<DynamicVfs>,
     runtime: Handle,
     inodes: RwLock<InodeTable>,
+    directories: Mutex<HashMap<u64, FuseDirectorySnapshot>>,
+}
+
+#[derive(Default)]
+struct FuseDirectorySnapshot {
+    complete: bool,
+    entries: Vec<guglefs_core::DirectoryEntry>,
 }
 
 impl FuseCallbacks {
@@ -84,6 +90,7 @@ impl FuseCallbacks {
             vfs,
             runtime,
             inodes: RwLock::new(InodeTable::default()),
+            directories: Mutex::new(HashMap::new()),
         }
     }
 
@@ -422,7 +429,22 @@ impl Filesystem for FuseCallbacks {
             .path(inode)
             .and_then(|path| self.block_on(self.vfs.open_dir(&path)));
         match result {
-            Ok(handle) => reply.opened(FuseFileHandle(handle.id()), FopenFlags::empty()),
+            Ok(handle) => {
+                let result =
+                    self.directories
+                        .lock()
+                        .map_err(|_| Errno::EIO)
+                        .map(|mut directories| {
+                            directories.insert(handle.id(), FuseDirectorySnapshot::default());
+                        });
+                match result {
+                    Ok(()) => reply.opened(FuseFileHandle(handle.id()), FopenFlags::empty()),
+                    Err(error) => {
+                        let _ = self.block_on(self.vfs.release_dir(handle));
+                        reply.error(error);
+                    }
+                }
+            }
             Err(error) => reply.error(error),
         }
     }
@@ -439,30 +461,65 @@ impl Filesystem for FuseCallbacks {
             let path = self.path(inode)?;
             let parent = parent_path(&path);
             let parent_inode = self.inode(parent)?;
-            let entries = self.block_on(self.vfs.readdir(DirectoryHandle::from_id(handle.0)))?;
-            let mut output = Vec::with_capacity(entries.len() + 2);
-            output.push((inode, FileType::Directory, ".".to_string()));
-            output.push((parent_inode, FileType::Directory, "..".to_string()));
-            for entry in entries {
-                output.push((
-                    self.inode(&entry.path)?,
-                    file_type(entry.metadata.kind),
-                    entry.name,
-                ));
+            let directory_handle = DirectoryHandle::from_id(handle.0);
+
+            if offset == 0 {
+                if self
+                    .directories
+                    .lock()
+                    .map_err(|_| Errno::EIO)?
+                    .get(&handle.0)
+                    .is_some_and(|snapshot| !snapshot.entries.is_empty() || snapshot.complete)
+                {
+                    self.block_on(self.vfs.rewind_dir(directory_handle))?;
+                    self.directories
+                        .lock()
+                        .map_err(|_| Errno::EIO)?
+                        .insert(handle.0, FuseDirectorySnapshot::default());
+                }
+                if reply.add(inode, 1, FileType::Directory, ".") {
+                    return Ok(());
+                }
             }
-            Ok(output)
+            if offset <= 1 && reply.add(parent_inode, 2, FileType::Directory, "..") {
+                return Ok(());
+            }
+
+            let mut index =
+                usize::try_from(offset.saturating_sub(2)).map_err(|_| Errno::EOVERFLOW)?;
+            loop {
+                let (complete, entry) = {
+                    let directories = self.directories.lock().map_err(|_| Errno::EIO)?;
+                    let snapshot = directories.get(&handle.0).ok_or(Errno::EBADF)?;
+                    (snapshot.complete, snapshot.entries.get(index).cloned())
+                };
+                if let Some(entry) = entry {
+                    let entry_inode = self.inode(&entry.path)?;
+                    if reply.add(
+                        entry_inode,
+                        (index + 3) as u64,
+                        file_type(entry.metadata.kind),
+                        entry.name,
+                    ) {
+                        return Ok(());
+                    }
+                    index += 1;
+                    continue;
+                }
+                if complete {
+                    return Ok(());
+                }
+
+                let page =
+                    self.block_on(self.vfs.readdir_page(directory_handle, DIRECTORY_PAGE_SIZE))?;
+                let mut directories = self.directories.lock().map_err(|_| Errno::EIO)?;
+                let snapshot = directories.get_mut(&handle.0).ok_or(Errno::EBADF)?;
+                snapshot.entries.extend(page.entries);
+                snapshot.complete = !page.has_more;
+            }
         })();
         match result {
-            Ok(entries) => {
-                for (index, (inode, kind, name)) in
-                    entries.into_iter().enumerate().skip(offset as usize)
-                {
-                    if reply.add(inode, (index + 1) as u64, kind, name) {
-                        break;
-                    }
-                }
-                reply.ok();
-            }
+            Ok(()) => reply.ok(),
             Err(error) => reply.error(error),
         }
     }
@@ -475,7 +532,11 @@ impl Filesystem for FuseCallbacks {
         _flags: OpenFlags,
         reply: ReplyEmpty,
     ) {
-        match self.block_on(self.vfs.release_dir(DirectoryHandle::from_id(handle.0))) {
+        let result = self.block_on(self.vfs.release_dir(DirectoryHandle::from_id(handle.0)));
+        if let Ok(mut directories) = self.directories.lock() {
+            directories.remove(&handle.0);
+        }
+        match result {
             Ok(()) => reply.ok(),
             Err(error) => reply.error(error),
         }
@@ -621,35 +682,20 @@ impl MountDriver for SystemMountDriver {
                 mount_point.display()
             ))
         })?;
-        let root_prefetch = runtime.spawn(async move {
-            if let Ok(handle) = vfs.open_dir("/").await {
-                let _ = vfs.readdir(handle).await;
-                let _ = vfs.release_dir(handle).await;
-            }
-        });
-
         let mut mounts = match self.mounts.lock() {
             Ok(mounts) => mounts,
             Err(error) => {
-                root_prefetch.abort();
                 let _ = session.umount_and_join();
                 return Err(EngineError::Internal(error.to_string()));
             }
         };
         if mounts.contains_key(&mount_point) {
-            root_prefetch.abort();
             let _ = session.umount_and_join();
             return Err(EngineError::AlreadyMounted(
                 mount_point.display().to_string(),
             ));
         }
-        mounts.insert(
-            mount_point,
-            MountedFuse {
-                session,
-                root_prefetch,
-            },
-        );
+        mounts.insert(mount_point, MountedFuse { session });
         Ok(())
     }
 
@@ -661,7 +707,6 @@ impl MountDriver for SystemMountDriver {
             .map_err(|error| EngineError::Internal(error.to_string()))?
             .remove(&mount_point)
             .ok_or_else(|| EngineError::NotMounted(mount_point.display().to_string()))?;
-        mounted.root_prefetch.abort();
         mounted.session.umount_and_join().map_err(|error| {
             EngineError::Mount(format!(
                 "FUSE unmount failed at {}: {error}",

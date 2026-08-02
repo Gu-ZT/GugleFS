@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock, RwLockReadGuard, RwLockWriteGuard,
@@ -15,9 +15,9 @@ use crate::{
     FsErrorCode, RemoteFileSystem,
 };
 
-const METADATA_CACHE_TTL: Duration = Duration::from_secs(3);
-const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(1);
-const DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(2);
+const METADATA_CACHE_TTL: Duration = Duration::from_secs(30);
+const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(3);
+const DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(30);
 const FILESYSTEM_SPACE_CACHE_TTL: Duration = Duration::from_secs(30);
 const READ_AHEAD_SIZE: u64 = 1024 * 1024;
 const MAX_CACHE_ENTRIES: usize = 4096;
@@ -46,6 +46,12 @@ impl DirectoryHandle {
     pub const fn id(self) -> u64 {
         self.0
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryReadPage {
+    pub entries: Vec<DirectoryEntry>,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +117,12 @@ pub trait VirtualFileSystem: Send + Sync {
     async fn open(&self, path: &str, options: OpenOptions) -> EngineResult<FileHandle>;
     async fn open_dir(&self, path: &str) -> EngineResult<DirectoryHandle>;
     async fn readdir(&self, handle: DirectoryHandle) -> EngineResult<Vec<DirectoryEntry>>;
+    async fn readdir_page(
+        &self,
+        handle: DirectoryHandle,
+        max_entries: usize,
+    ) -> EngineResult<DirectoryReadPage>;
+    async fn rewind_dir(&self, handle: DirectoryHandle) -> EngineResult<()>;
     async fn read(&self, handle: FileHandle, offset: u64, length: u64) -> EngineResult<Vec<u8>>;
     async fn write(&self, handle: FileHandle, offset: u64, data: Vec<u8>) -> EngineResult<u64>;
     async fn flush(&self, handle: FileHandle) -> EngineResult<()>;
@@ -127,6 +139,7 @@ pub struct RemoteVfs<R: RemoteFileSystem + ?Sized> {
     remote: Arc<R>,
     next_handle: AtomicU64,
     content_generation: AtomicU64,
+    directory_generation: AtomicU64,
     files: RwLock<HashMap<FileHandle, Arc<OpenFile>>>,
     directories: RwLock<HashMap<DirectoryHandle, Arc<OpenDirectory>>>,
     metadata_cache: RwLock<HashMap<String, CacheEntry<CachedMetadata>>>,
@@ -142,6 +155,7 @@ impl<R: RemoteFileSystem + ?Sized> RemoteVfs<R> {
             remote,
             next_handle: AtomicU64::new(1),
             content_generation: AtomicU64::new(0),
+            directory_generation: AtomicU64::new(0),
             files: RwLock::new(HashMap::new()),
             directories: RwLock::new(HashMap::new()),
             metadata_cache: RwLock::new(HashMap::new()),
@@ -162,6 +176,10 @@ impl<R: RemoteFileSystem + ?Sized> RemoteVfs<R> {
 
     pub fn open_directory_count(&self) -> EngineResult<usize> {
         Ok(read_lock(&self.directories)?.len())
+    }
+
+    pub fn directory_generation(&self) -> u64 {
+        self.directory_generation.load(Ordering::Acquire)
     }
 
     fn allocate_handle(&self) -> EngineResult<u64> {
@@ -374,6 +392,7 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
             Ok(metadata) => metadata,
             Err(error) if options.create && error.code() == FsErrorCode::NotFound => {
                 self.remote.create_file(&path).await?;
+                self.directory_generation.fetch_add(1, Ordering::AcqRel);
                 let metadata = FileMetadata {
                     kind: EntryKind::File,
                     size: 0,
@@ -424,7 +443,7 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
             handle,
             Arc::new(OpenDirectory {
                 path: RwLock::new(path),
-                operation: Mutex::new(()),
+                operation: Mutex::new(DirectoryOperation::default()),
                 released: AtomicBool::new(false),
             }),
         );
@@ -437,6 +456,81 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
         ensure_open(directory.released.load(Ordering::Acquire), handle.id())?;
         let path = read_lock(&directory.path)?.clone();
         self.directory_entries(&path).await
+    }
+
+    async fn readdir_page(
+        &self,
+        handle: DirectoryHandle,
+        max_entries: usize,
+    ) -> EngineResult<DirectoryReadPage> {
+        if max_entries == 0 {
+            return Err(invalid_argument(
+                "directory page size must be greater than zero",
+            ));
+        }
+        let directory = self.directory(handle)?;
+        let mut operation = directory.operation.lock().await;
+        ensure_open(directory.released.load(Ordering::Acquire), handle.id())?;
+        let path = read_lock(&directory.path)?.clone();
+
+        if !operation.started {
+            operation.started = true;
+            if let Some(entries) = get_cached(&self.directory_cache, &path)? {
+                operation.pending.extend(entries.iter().cloned());
+                operation.accumulated = entries;
+                operation.finished = true;
+            }
+        }
+
+        while operation.pending.len() < max_entries && !operation.finished {
+            let previous_cursor = operation.remote_cursor.clone();
+            let page = self
+                .remote
+                .read_dir_page(&path, previous_cursor.as_deref(), max_entries)
+                .await?;
+            if page.entries.is_empty()
+                && page.next_cursor.is_some()
+                && page.next_cursor == previous_cursor
+            {
+                return Err(EngineError::filesystem(
+                    FsErrorCode::RemoteIo,
+                    "remote directory cursor made no progress",
+                ));
+            }
+            for entry in &page.entries {
+                self.cache_metadata(&entry.path, CachedMetadata::Found(entry.metadata.clone()))?;
+            }
+            operation.pending.extend(page.entries.iter().cloned());
+            operation.accumulated.extend(page.entries);
+            operation.remote_cursor = page.next_cursor;
+            operation.finished = operation.remote_cursor.is_none();
+            if operation.finished {
+                insert_cached(
+                    &self.directory_cache,
+                    path.clone(),
+                    operation.accumulated.clone(),
+                    DIRECTORY_CACHE_TTL,
+                )?;
+            }
+        }
+
+        let count = max_entries.min(operation.pending.len());
+        let entries = operation.pending.drain(..count).collect();
+        Ok(DirectoryReadPage {
+            entries,
+            has_more: !operation.pending.is_empty() || !operation.finished,
+        })
+    }
+
+    async fn rewind_dir(&self, handle: DirectoryHandle) -> EngineResult<()> {
+        let directory = self.directory(handle)?;
+        let mut operation = directory.operation.lock().await;
+        ensure_open(directory.released.load(Ordering::Acquire), handle.id())?;
+        if let Some(cursor) = operation.remote_cursor.take() {
+            self.remote.close_dir_cursor(&cursor).await?;
+        }
+        *operation = DirectoryOperation::default();
+        Ok(())
     }
 
     async fn read(&self, handle: FileHandle, offset: u64, length: u64) -> EngineResult<Vec<u8>> {
@@ -537,16 +631,21 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
 
     async fn release_dir(&self, handle: DirectoryHandle) -> EngineResult<()> {
         let directory = self.directory(handle)?;
-        let _operation = directory.operation.lock().await;
+        let mut operation = directory.operation.lock().await;
         ensure_open(directory.released.load(Ordering::Acquire), handle.id())?;
+        let close_result = match operation.remote_cursor.take() {
+            Some(cursor) => self.remote.close_dir_cursor(&cursor).await,
+            None => Ok(()),
+        };
         directory.released.store(true, Ordering::Release);
         write_lock(&self.directories)?.remove(&handle);
-        Ok(())
+        close_result
     }
 
     async fn create_dir(&self, path: &str) -> EngineResult<()> {
         let path = normalize_path(path)?;
         self.remote.create_dir(&path).await?;
+        self.directory_generation.fetch_add(1, Ordering::AcqRel);
         self.cache_metadata(
             &path,
             CachedMetadata::Found(FileMetadata {
@@ -581,6 +680,7 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
             .remove(&path, kind == EntryKind::Directory)
             .await?;
         self.content_generation.fetch_add(1, Ordering::AcqRel);
+        self.directory_generation.fetch_add(1, Ordering::AcqRel);
         self.invalidate_subtree(&path)
     }
 
@@ -589,6 +689,7 @@ impl<R: RemoteFileSystem + ?Sized> VirtualFileSystem for RemoteVfs<R> {
         let to = normalize_path(to)?;
         self.remote.rename(&from, &to).await?;
         self.content_generation.fetch_add(1, Ordering::AcqRel);
+        self.directory_generation.fetch_add(1, Ordering::AcqRel);
         self.retarget_open_paths(&from, &to)?;
         self.invalidate_subtree(&from)?;
         self.invalidate_subtree(&to)
@@ -665,8 +766,17 @@ impl ReadCache {
 
 struct OpenDirectory {
     path: RwLock<String>,
-    operation: Mutex<()>,
+    operation: Mutex<DirectoryOperation>,
     released: AtomicBool,
+}
+
+#[derive(Default)]
+struct DirectoryOperation {
+    started: bool,
+    finished: bool,
+    remote_cursor: Option<String>,
+    pending: VecDeque<DirectoryEntry>,
+    accumulated: Vec<DirectoryEntry>,
 }
 
 async fn flush_file<R: RemoteFileSystem + ?Sized>(remote: &R, file: &OpenFile) -> EngineResult<()> {
@@ -798,6 +908,7 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::*;
+    use crate::DirectoryPage;
 
     #[derive(Debug, Clone)]
     struct Node {
@@ -866,6 +977,72 @@ mod tests {
         directory_reads: AtomicUsize,
         started: Semaphore,
         release: Semaphore,
+    }
+
+    #[derive(Default)]
+    struct PagedDirectoryRemote {
+        page_reads: AtomicUsize,
+        cursors_closed: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl RemoteFileSystem for PagedDirectoryRemote {
+        async fn connect(&self) -> EngineResult<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> EngineResult<()> {
+            Ok(())
+        }
+
+        async fn metadata(&self, path: &str) -> EngineResult<FileMetadata> {
+            if path != "/" {
+                return Err(EngineError::filesystem(FsErrorCode::NotFound, path));
+            }
+            Ok(FileMetadata {
+                kind: EntryKind::Directory,
+                size: 0,
+                created: None,
+                accessed: None,
+                modified: None,
+            })
+        }
+
+        async fn read_dir_page(
+            &self,
+            path: &str,
+            cursor: Option<&str>,
+            max_entries: usize,
+        ) -> EngineResult<DirectoryPage> {
+            self.page_reads.fetch_add(1, Ordering::Relaxed);
+            let start = cursor
+                .unwrap_or("0")
+                .parse::<usize>()
+                .map_err(|_| invalid_argument("invalid test cursor"))?;
+            let end = start.saturating_add(max_entries).min(5);
+            let entries = (start..end)
+                .map(|index| DirectoryEntry {
+                    path: format!("{}/file-{index}", path.trim_end_matches('/')),
+                    name: format!("file-{index}"),
+                    metadata: FileMetadata {
+                        kind: EntryKind::File,
+                        size: index as u64,
+                        created: None,
+                        accessed: None,
+                        modified: None,
+                    },
+                })
+                .collect();
+            Ok(DirectoryPage {
+                entries,
+                next_cursor: (end < 5).then(|| end.to_string()),
+            })
+        }
+
+        async fn close_dir_cursor(&self, _cursor: &str) -> EngineResult<()> {
+            self.cursors_closed.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
     }
 
     impl BlockingDirectoryRemote {
@@ -1203,6 +1380,46 @@ mod tests {
         assert_eq!(first.await.unwrap().len(), 1);
         assert_eq!(second.await.unwrap().len(), 1);
         assert_eq!(remote.directory_reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pages_large_directories_and_releases_unfinished_cursors() {
+        let remote = Arc::new(PagedDirectoryRemote::default());
+        let vfs = RemoteVfs::new(remote.clone());
+        let interrupted = vfs.open_dir("/").await.unwrap();
+
+        let first = vfs.readdir_page(interrupted, 2).await.unwrap();
+        assert_eq!(
+            first
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["file-0", "file-1"]
+        );
+        assert!(first.has_more);
+        assert_eq!(remote.page_reads.load(Ordering::Relaxed), 1);
+        vfs.release_dir(interrupted).await.unwrap();
+        assert_eq!(remote.cursors_closed.load(Ordering::Relaxed), 1);
+
+        let completed = vfs.open_dir("/").await.unwrap();
+        let second = vfs.readdir_page(completed, 2).await.unwrap();
+        let third = vfs.readdir_page(completed, 2).await.unwrap();
+        let fourth = vfs.readdir_page(completed, 2).await.unwrap();
+        assert!(second.has_more);
+        assert!(third.has_more);
+        assert!(!fourth.has_more);
+        assert_eq!(fourth.entries[0].name, "file-4");
+        assert_eq!(remote.page_reads.load(Ordering::Relaxed), 4);
+        vfs.release_dir(completed).await.unwrap();
+        assert_eq!(remote.cursors_closed.load(Ordering::Relaxed), 1);
+
+        let cached = vfs.open_dir("/").await.unwrap();
+        let cached_page = vfs.readdir_page(cached, 10).await.unwrap();
+        assert_eq!(cached_page.entries.len(), 5);
+        assert!(!cached_page.has_more);
+        assert_eq!(remote.page_reads.load(Ordering::Relaxed), 4);
+        vfs.release_dir(cached).await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
