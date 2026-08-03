@@ -46,6 +46,7 @@ export interface MappingRuntime {
 export interface AuthStatus {
   configured: boolean;
   unlocked: boolean;
+  twoFactorEnabled: boolean;
 }
 
 export interface TotpSetup {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import appIconUrl from "../assets/app-icon.png";
 import { localeLabel, t, toggleLocale } from "../i18n";
 import { store } from "../store";
@@ -17,6 +17,11 @@ const locking = ref(false);
 const installingFuseT = ref(false);
 const transferringConfig = ref(false);
 const exportingDiagnostics = ref(false);
+const twoFactorDialog = ref<HTMLDialogElement | null>(null);
+const twoFactorCodeInput = ref<HTMLInputElement | null>(null);
+const twoFactorCode = ref("");
+const twoFactorBusy = ref(false);
+const twoFactorError = ref<string | null>(null);
 
 const mappingCount = computed(() => t("workspace.mappingCount", { count: store.mappings.length }));
 const showFuseTBanner = computed(
@@ -77,6 +82,55 @@ function lock(): void {
     .finally(() => {
       locking.value = false;
     });
+}
+
+function normalizeTwoFactorCode(): void {
+  twoFactorCode.value = twoFactorCode.value.replace(/\D/g, "").slice(0, 6);
+}
+
+async function toggleTwoFactor(): Promise<void> {
+  if (twoFactorBusy.value) return;
+  if (!store.authStatus.twoFactorEnabled) {
+    twoFactorBusy.value = true;
+    try {
+      await store.setTwoFactorEnabled(true);
+      store.setNotice(t("notice.twoFactorEnabled"), "success");
+    } catch (error) {
+      store.setNotice(String(error));
+    } finally {
+      twoFactorBusy.value = false;
+    }
+    return;
+  }
+
+  twoFactorCode.value = "";
+  twoFactorError.value = null;
+  if (!twoFactorDialog.value?.open) twoFactorDialog.value?.showModal();
+  await nextTick();
+  twoFactorCodeInput.value?.focus();
+}
+
+function closeTwoFactorDialog(): void {
+  twoFactorDialog.value?.close();
+}
+
+async function disableTwoFactor(): Promise<void> {
+  twoFactorBusy.value = true;
+  twoFactorError.value = null;
+  try {
+    await store.setTwoFactorEnabled(false, twoFactorCode.value);
+    closeTwoFactorDialog();
+    store.setNotice(t("notice.twoFactorDisabled"), "success");
+  } catch (error) {
+    twoFactorError.value = String(error);
+  } finally {
+    twoFactorBusy.value = false;
+  }
+}
+
+function onTwoFactorDialogClose(): void {
+  twoFactorCode.value = "";
+  twoFactorError.value = null;
 }
 
 function installFuseT(): void {
@@ -186,6 +240,21 @@ async function exportDiagnostics(): Promise<void> {
             :aria-checked="updater.autoCheck"
             :aria-label="t('workspace.autoCheckUpdates')"
             @click="updater.setAutoCheck(!updater.autoCheck)"
+          >
+            <span class="switch-knob" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div class="autostart-row">
+          <span class="autostart-label">{{ t("workspace.twoFactor") }}</span>
+          <button
+            class="switch"
+            :class="{ on: store.authStatus.twoFactorEnabled }"
+            type="button"
+            role="switch"
+            :aria-checked="store.authStatus.twoFactorEnabled"
+            :aria-label="t('workspace.twoFactor')"
+            :disabled="twoFactorBusy"
+            @click="toggleTwoFactor"
           >
             <span class="switch-knob" aria-hidden="true"></span>
           </button>
@@ -390,5 +459,61 @@ async function exportDiagnostics(): Promise<void> {
 
     <MappingFormDialog ref="formDialog" />
     <MountDialog ref="mountDialog" />
+    <dialog
+      ref="twoFactorDialog"
+      class="app-dialog security-dialog"
+      aria-labelledby="two-factor-dialog-title"
+      @close="onTwoFactorDialogClose"
+    >
+      <form :aria-busy="twoFactorBusy" @submit.prevent="disableTwoFactor">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">{{ t("workspace.security") }}</p>
+            <h2 id="two-factor-dialog-title">{{ t("workspace.twoFactorDisableTitle") }}</h2>
+            <p class="dialog-subtitle">{{ t("workspace.twoFactorDisableHint") }}</p>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            :aria-label="t('dialog.close')"
+            :title="t('dialog.close')"
+            @click="closeTwoFactorDialog"
+          >
+            ×
+          </button>
+        </div>
+
+        <div class="form-grid">
+          <label class="full-width">
+            <span>{{ t("auth.code") }}</span>
+            <input
+              ref="twoFactorCodeInput"
+              v-model="twoFactorCode"
+              class="code-input"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              maxlength="6"
+              pattern="[0-9]{6}"
+              placeholder="000000"
+              required
+              @input="normalizeTwoFactorCode"
+            />
+          </label>
+        </div>
+
+        <div v-if="twoFactorError" class="notice dialog-notice" role="alert">
+          {{ twoFactorError }}
+        </div>
+
+        <div class="dialog-actions">
+          <button class="secondary" type="button" @click="closeTwoFactorDialog">
+            {{ t("dialog.cancel") }}
+          </button>
+          <button class="primary" type="submit" :disabled="twoFactorBusy">
+            {{ twoFactorBusy ? t("auth.verifying") : t("workspace.twoFactorDisableConfirm") }}
+          </button>
+        </div>
+      </form>
+    </dialog>
   </div>
 </template>

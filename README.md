@@ -14,7 +14,7 @@ GugleFS is a cross-platform Tauri desktop client that turns remote servers into 
 
 - **Three protocols, one UI** — FTP/FTPS, SFTP (password, private key, SSH Agent, MFA), and WebDAV (Basic, Digest, Bearer, or client certificate)
 - **Native mounts** — WinFsp 2.1 on Windows, FUSE3 on Linux, FUSE-T 1.2.7 on macOS
-- **Locked at startup** — TOTP two-factor authentication gates the app; credentials live in the OS secure store
+- **Protected startup and locking** — TOTP two-factor authentication is enabled by default, with a workspace switch for direct unlock; disabling it requires the current code
 - **Survives the network** — idle keepalives, silent reconnects, and mount recovery after restart
 - **Fast by default** — bounded metadata caches and 1 MiB sequential read-ahead, shared across platforms
 - **Remote facts preserved** — available protocol timestamps and asynchronously cached storage capacity are projected into native filesystem metadata
@@ -24,7 +24,7 @@ The desktop UI is built with Tauri, Vue 3, TypeScript, and Vite; the filesystem 
 
 ## Screenshots
 
-Unlock is protected by TOTP two-factor authentication:
+By default, startup and unlock after locking are protected by TOTP two-factor authentication. The workspace security switch can disable both checks after confirming the current code:
 
 <p align="center">
   <img src="docs/totp.png" width="640" alt="GugleFS 2FA unlock screen">
@@ -143,9 +143,9 @@ WebDAV supports HTTP(S) and SOCKS5 proxies. SFTP, FTP, and FTPS use HTTP CONNECT
 
 ## Credentials and startup security
 
-On first launch, GugleFS enrolls a TOTP authenticator and requires a six-digit code on subsequent launches. Passwords, WebDAV Bearer tokens, private-key passphrases, pasted keys, and the application-startup TOTP secret are stored in Windows Credential Manager, macOS Keychain, or Linux Secret Service. Mapping and recovery files contain only credential references and mapping IDs. SFTP MFA codes are transient and are not added to the secure store.
+On first launch, GugleFS enrolls a TOTP authenticator and enables six-digit verification for subsequent launches and unlocks after locking. The workspace security switch can disable both checks only after confirming the current TOTP; when disabled, startup and the lock screen offer direct unlock. Passwords, WebDAV Bearer tokens, private-key passphrases, pasted keys, the application-startup TOTP secret, and this security setting are stored in Windows Credential Manager, macOS Keychain, or Linux Secret Service. Mapping and recovery files contain only credential references and mapping IDs. SFTP MFA codes are transient and are not added to the secure store.
 
-Locking the app safely unmounts active mappings before showing the 2FA screen. After unlock or restart, GugleFS restores mappings that were still mounted and have saved credentials, plus mappings with `auto_mount` enabled. A mapping explicitly unmounted by the user is not restored unless `auto_mount` is enabled. SFTP mappings that require MFA are always excluded from automatic restoration.
+Locking the app safely unmounts active mappings before showing the 2FA or direct-unlock screen, depending on the security switch. After unlock or restart, GugleFS restores mappings that were still mounted and have saved credentials, plus mappings with `auto_mount` enabled. A mapping explicitly unmounted by the user is not restored unless `auto_mount` is enabled. SFTP mappings that require MFA are always excluded from automatic restoration.
 
 Mount and unmount commands run on Tauri's async runtime and serialize driver transitions in the backend. Every `mounting`, `unmounting`, `mounted`, `unmounted`, or `error` transition is emitted to the frontend, so manual actions, startup recovery, and lock-triggered unmounting share one live state source. These tasks remain attached to the application lifecycle so tray Exit can still stop every filesystem before the process exits.
 

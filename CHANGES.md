@@ -4,6 +4,10 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-08-03
+
+- Added a workspace security switch for startup and lock TOTP verification. Disabling it requires the current code; disabled mode provides direct unlock at startup and after locking.
+
 ## [0.16.0] - 2026-08-02
 
 - Large SFTP directories now use cursor-based linear pagination. WinFsp and FUSE return the first available page without waiting for the complete directory, reuse stable per-handle snapshots, and clean up interrupted cursors; mount-time root prefetch no longer competes with foreground browsing. Longer bounded metadata caches reduce repeated property and thumbnail requests.

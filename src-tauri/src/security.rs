@@ -11,6 +11,7 @@ use totp_rs::{Algorithm, Secret, TOTP};
 
 const TOTP_SERVICE: &str = "dev.guglefs.desktop.security";
 const TOTP_ACCOUNT: &str = "startup-totp";
+const TOTP_REQUIRED_ACCOUNT: &str = "startup-totp-required";
 const MAPPING_SERVICE: &str = "dev.guglefs.desktop.mapping";
 const PRIVATE_KEY_SERVICE: &str = "dev.guglefs.desktop.private-key";
 const PRIVATE_KEY_CHUNK_BYTES: usize = 900;
@@ -24,6 +25,7 @@ const LOCKOUT_DURATION: Duration = Duration::from_secs(30);
 pub struct AuthStatus {
     pub configured: bool,
     pub unlocked: bool,
+    pub two_factor_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -42,6 +44,7 @@ struct AttemptState {
 #[derive(Debug, Default)]
 pub struct SecurityManager {
     unlocked: AtomicBool,
+    startup_initialized: AtomicBool,
     pending_setup: Mutex<Option<String>>,
     attempts: Mutex<AttemptState>,
 }
@@ -49,9 +52,21 @@ pub struct SecurityManager {
 impl SecurityManager {
     pub fn status(&self) -> Result<AuthStatus, String> {
         let configured = read_secure_value(TOTP_SERVICE, TOTP_ACCOUNT)?.is_some();
+        let two_factor_enabled = if configured {
+            self.two_factor_enabled()?
+        } else {
+            true
+        };
+        if configured
+            && !self.startup_initialized.swap(true, Ordering::AcqRel)
+            && !two_factor_enabled
+        {
+            self.unlocked.store(true, Ordering::Release);
+        }
         Ok(AuthStatus {
             configured,
             unlocked: configured && self.unlocked.load(Ordering::Acquire),
+            two_factor_enabled,
         })
     }
 
@@ -99,12 +114,37 @@ impl SecurityManager {
     pub fn unlock(&self, code: &str) -> Result<AuthStatus, String> {
         let secret = read_secure_value(TOTP_SERVICE, TOTP_ACCOUNT)?
             .ok_or_else(|| "尚未配置 2FA".to_string())?;
-        self.verify_code(&secret, code)?;
+        if self.two_factor_enabled()? {
+            self.verify_code(&secret, code)?;
+        }
         self.unlocked.store(true, Ordering::Release);
         self.status()
     }
 
+    pub fn set_two_factor_enabled(
+        &self,
+        enabled: bool,
+        code: Option<&str>,
+    ) -> Result<AuthStatus, String> {
+        self.require_unlocked()?;
+        let secret = read_secure_value(TOTP_SERVICE, TOTP_ACCOUNT)?
+            .ok_or_else(|| "尚未配置 2FA".to_string())?;
+        let current = self.two_factor_enabled()?;
+        if !enabled && current {
+            self.verify_code(&secret, code.unwrap_or_default())?;
+        }
+        if current != enabled {
+            write_secure_value(
+                TOTP_SERVICE,
+                TOTP_REQUIRED_ACCOUNT,
+                if enabled { "true" } else { "false" },
+            )?;
+        }
+        self.status()
+    }
+
     pub fn lock(&self) -> Result<AuthStatus, String> {
+        self.startup_initialized.store(true, Ordering::Release);
         self.unlocked.store(false, Ordering::Release);
         self.status()
     }
@@ -113,8 +153,15 @@ impl SecurityManager {
         if self.unlocked.load(Ordering::Acquire) {
             Ok(())
         } else {
-            Err("应用已锁定，请先完成 2FA 验证".into())
+            Err("应用已锁定，请先解锁".into())
         }
+    }
+
+    fn two_factor_enabled(&self) -> Result<bool, String> {
+        Ok(read_secure_value(TOTP_SERVICE, TOTP_REQUIRED_ACCOUNT)?
+            .as_deref()
+            .map(parse_two_factor_enabled)
+            .unwrap_or(true))
     }
 
     pub fn store_mapping_password(
@@ -300,6 +347,10 @@ fn private_key_chunk_account(key_id: &str, index: usize) -> String {
     format!("{key_id}-chunk-{index}")
 }
 
+fn parse_two_factor_enabled(value: &str) -> bool {
+    value != "false"
+}
+
 fn totp_from_secret(secret: &str) -> Result<TOTP, String> {
     let bytes = Secret::Encoded(secret.to_string())
         .to_bytes()
@@ -390,6 +441,13 @@ mod tests {
     #[test]
     fn a_new_security_manager_starts_locked() {
         assert!(SecurityManager::default().require_unlocked().is_err());
+    }
+
+    #[test]
+    fn missing_or_unknown_two_factor_setting_stays_enabled() {
+        assert!(parse_two_factor_enabled("true"));
+        assert!(parse_two_factor_enabled("unknown"));
+        assert!(!parse_two_factor_enabled("false"));
     }
 
     #[cfg(target_os = "windows")]

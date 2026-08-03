@@ -158,6 +158,17 @@ pub fn unlock_app(state: State<'_, AppState>, code: String) -> CommandResult<Aut
 }
 
 #[tauri::command]
+pub fn set_two_factor_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+    code: Option<String>,
+) -> CommandResult<AuthStatus> {
+    state
+        .security
+        .set_two_factor_enabled(enabled, code.as_deref())
+}
+
+#[tauri::command]
 pub async fn lock_app(app: AppHandle, state: State<'_, AppState>) -> CommandResult<AuthStatus> {
     state.security.require_unlocked()?;
     let _operation = state.mount_operations.lock().await;

@@ -40,6 +40,11 @@ export const store = reactive({
   } as PlatformInfo,
   mappings: [] as MappingRuntime[],
   notice: null as Notice | null,
+  authStatus: {
+    configured: false,
+    unlocked: false,
+    twoFactorEnabled: true,
+  } as AuthStatus,
   autoLaunch: false,
   autoLaunchBusy: false,
   occupiedLetters: [] as string[],
@@ -139,6 +144,7 @@ export const store = reactive({
   async initializeAuth(): Promise<void> {
     try {
       const status = await invoke<AuthStatus>("get_auth_status");
+      this.authStatus = status;
       this.phase = !status.configured ? "setup" : status.unlocked ? "loading" : "unlock";
       if (status.configured && status.unlocked) {
         await this.enterWorkspace();
@@ -149,13 +155,29 @@ export const store = reactive({
     }
   },
 
-  async unlock(code: string): Promise<void> {
-    await invoke<AuthStatus>("unlock_app", { code });
+  async confirmSetup(code: string): Promise<void> {
+    const status = await invoke<AuthStatus>("confirm_2fa_setup", { code });
+    this.authStatus = status;
     await this.enterWorkspace();
   },
 
+  async unlock(code: string): Promise<void> {
+    const status = await invoke<AuthStatus>("unlock_app", { code });
+    this.authStatus = status;
+    await this.enterWorkspace();
+  },
+
+  async setTwoFactorEnabled(enabled: boolean, code?: string): Promise<void> {
+    const status = await invoke<AuthStatus>("set_two_factor_enabled", {
+      enabled,
+      code: code ?? null,
+    });
+    this.authStatus = status;
+  },
+
   async lock(): Promise<void> {
-    await invoke<AuthStatus>("lock_app");
+    const status = await invoke<AuthStatus>("lock_app");
+    this.authStatus = status;
     this.mappings = [];
     this.clearNotice();
     this.phase = "unlock";

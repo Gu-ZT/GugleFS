@@ -93,6 +93,7 @@
 - [x] 使用 Windows Credential Manager 分块保存粘贴的 SSH 私钥，本地私钥仅保存路径
 - [x] 使用 macOS Keychain 和 Linux Secret Service 保存凭据、应用启动 2FA 的 TOTP 密钥和粘贴私钥
 - [x] 使用 TOTP 2FA 保护应用启动和凭据操作
+- [x] 增加工作区安全开关；关闭启动和锁定 2FA 前必须验证当前 TOTP，关闭后支持直接解锁
 - [x] 实现配置迁移、导入与导出（导出不包含凭据）
 - [x] 解锁时恢复 `auto_mount` 及上次仍挂载且已保存凭据的映射
 - [x] 增加 FTP/FTPS/SFTP/WebDAV 连接测试

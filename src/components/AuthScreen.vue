@@ -38,10 +38,9 @@ async function submitSetup(): Promise<void> {
   busy.value = true;
   errorMessage.value = null;
   try {
-    await invoke("confirm_2fa_setup", { code: code.value });
+    await store.confirmSetup(code.value);
     qrCode.value = "";
     secret.value = "";
-    await store.enterWorkspace();
   } catch (error) {
     errorMessage.value = String(error);
   } finally {
@@ -91,8 +90,20 @@ onMounted(async () => {
 
       <section class="auth-panel" aria-labelledby="auth-title">
         <div class="auth-heading">
-          <p class="eyebrow">Two-Factor Authentication</p>
-          <h2 id="auth-title">{{ t(mode === "setup" ? "auth.setupTitle" : "auth.unlockTitle") }}</h2>
+          <p class="eyebrow">
+            {{ t(mode === "setup" || store.authStatus.twoFactorEnabled ? "auth.eyebrow" : "auth.eyebrowWithoutCode") }}
+          </p>
+          <h2 id="auth-title">
+            {{
+              t(
+                mode === "setup"
+                  ? "auth.setupTitle"
+                  : store.authStatus.twoFactorEnabled
+                    ? "auth.unlockTitle"
+                    : "auth.unlockWithoutCodeTitle",
+              )
+            }}
+          </h2>
         </div>
 
         <div v-if="errorMessage" class="notice auth-notice" role="alert">
@@ -105,7 +116,7 @@ onMounted(async () => {
           :aria-busy="busy"
           @submit.prevent="submitUnlock"
         >
-          <label>
+          <label v-if="store.authStatus.twoFactorEnabled">
             <span>{{ t("auth.code") }}</span>
             <input
               ref="codeInput"
@@ -120,8 +131,15 @@ onMounted(async () => {
               @input="normalizeCode"
             />
           </label>
+          <p v-else class="auth-unlock-hint">{{ t("auth.unlockWithoutCodeHint") }}</p>
           <button class="primary btn-block" type="submit" :disabled="busy">
-            {{ busy ? t("auth.verifying") : t("auth.unlock") }}
+            {{
+              busy
+                ? t("auth.verifying")
+                : store.authStatus.twoFactorEnabled
+                  ? t("auth.unlock")
+                  : t("auth.unlockWithoutCode")
+            }}
           </button>
         </form>
 
@@ -163,7 +181,9 @@ onMounted(async () => {
         </div>
       </section>
 
-      <p class="auth-footnote">{{ t("auth.footnote") }}</p>
+      <p class="auth-footnote">
+        {{ t(mode === "setup" || store.authStatus.twoFactorEnabled ? "auth.footnote" : "auth.footnoteWithoutCode") }}
+      </p>
     </div>
   </div>
 </template>

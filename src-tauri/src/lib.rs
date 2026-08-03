@@ -155,6 +155,7 @@ pub fn run() {
             commands::begin_2fa_setup,
             commands::confirm_2fa_setup,
             commands::unlock_app,
+            commands::set_two_factor_enabled,
             commands::lock_app,
             commands::list_mappings,
             commands::export_mappings,

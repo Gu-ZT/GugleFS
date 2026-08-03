@@ -14,7 +14,7 @@ GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置�
 
 - **三种协议，一个界面** —— FTP/FTPS、SFTP（密码、私钥、SSH Agent、MFA）、WebDAV（Basic、Digest、Bearer 或客户端证书）
 - **原生挂载** —— Windows 使用 WinFsp 2.1，Linux 使用 FUSE3，macOS 使用 FUSE-T 1.2.7
-- **启动即锁定** —— TOTP 双因素认证保护应用启动，凭据保存在系统安全凭据库
+- **保护启动和锁定** —— 默认使用 TOTP 双因素认证，可在工作区切换为直接解锁；关闭前必须验证当前验证码
 - **经得起断网** —— 空闲 keepalive、静默重连、重启后恢复挂载
 - **默认就快** —— 有界元数据缓存与 1 MiB 顺序预读，三平台共用
 - **保留远端信息** —— 将协议可获取的时间戳和异步缓存的存储容量投影为原生文件系统元数据
@@ -24,7 +24,7 @@ GugleFS 是一个基于 Tauri 的跨平台远程文件系统客户端。配置�
 
 ## 界面截图
 
-启动解锁由 TOTP 双因素认证保护：
+默认情况下，启动和锁定后的解锁由 TOTP 双因素认证保护。工作区安全设置可以在验证当前验证码后关闭这两处验证：
 
 <p align="center">
   <img src="docs/totp.png" width="640" alt="GugleFS 2FA 解锁界面">
@@ -138,9 +138,9 @@ WebDAV 重定向限制在原始同源地址。读改写和截断优先使用强 
 
 每个映射默认读取系统代理，也可以勾选“忽略系统代理”强制直连。Linux 和 macOS 读取协议对应的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`SFTP_PROXY`、`ALL_PROXY` 及小写变量，并遵守 `NO_PROXY`。Windows 读取当前用户注册表 `Internet Settings` 下的 `ProxyEnable`、`ProxyServer` 和 `ProxyOverride`。WebDAV 使用 HTTP(S) 或 SOCKS5 代理；SFTP、FTP 和 FTPS 通过 HTTP CONNECT 或 SOCKS5 建立隧道，FTP 的控制连接和被动数据连接都会使用同一代理。
 
-首次启动会引导使用身份验证器注册 TOTP 2FA，之后每次启动都必须输入 6 位验证码。FTP/FTPS、SFTP 和 WebDAV 的密码、Bearer Token、私钥口令、粘贴私钥，以及用于应用启动 2FA 的 TOTP 密钥分别保存在 Windows Credential Manager、macOS Keychain 或 Linux Secret Service；应用配置和挂载恢复状态只保存凭据引用和映射 ID。SFTP MFA 验证码只在当前测试或挂载请求中使用，不会加入系统凭据库。
+首次启动会引导使用身份验证器注册 TOTP 2FA，默认在之后每次启动和锁定后解锁时要求 6 位验证码。工作区安全设置只有在验证当前 TOTP 后才能关闭这两处验证；关闭后启动和锁屏会提供直接解锁。FTP/FTPS、SFTP 和 WebDAV 的密码、Bearer Token、私钥口令、粘贴私钥、用于应用启动 2FA 的 TOTP 密钥及该安全设置分别保存在 Windows Credential Manager、macOS Keychain 或 Linux Secret Service；应用配置和挂载恢复状态只保存凭据引用和映射 ID。SFTP MFA 验证码只在当前测试或挂载请求中使用，不会加入系统凭据库。
 
-点击“锁定”会先安全卸载当前所有映射，再进入 2FA 锁屏。解锁或重启后，GugleFS 会自动恢复上次仍处于挂载状态且已保存凭据的映射；用户主动点击“卸载”后，该映射不会在下次解锁时恢复（启用了 `auto_mount` 的配置除外）。需要 MFA 的 SFTP 映射始终不会自动恢复，必须由用户输入当前验证码后手动挂载。
+点击“锁定”会先安全卸载当前所有映射，再根据安全设置进入 2FA 或直接解锁锁屏。解锁或重启后，GugleFS 会自动恢复上次仍处于挂载状态且已保存凭据的映射；用户主动点击“卸载”后，该映射不会在下次解锁时恢复（启用了 `auto_mount` 的配置除外）。需要 MFA 的 SFTP 映射始终不会自动恢复，必须由用户输入当前验证码后手动挂载。
 
 挂载和卸载命令运行在 Tauri 异步运行时中，驱动状态转换由后端串行管理。每次进入 `mounting`、`unmounting`、`mounted`、`unmounted` 或 `error` 都会向前端发送事件，因此手动操作、启动恢复和锁定卸载共用同一个实时状态源。这些任务仍附属于应用生命周期，托盘“退出”可以在进程结束前停止所有文件系统。
 
