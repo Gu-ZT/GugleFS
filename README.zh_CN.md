@@ -156,7 +156,7 @@ GugleFS 运行期间会创建固定且不含敏感信息的 `session-running` �
 
 ### 远程访问性能
 
-共享 VFS 层对 FTP、SFTP 和 WebDAV 启用了有界短期缓存：元数据和完整目录列表缓存 30 秒、未找到结果缓存 3 秒，最多保留 4096 项。SFTP 目录枚举会在专用 channel 上保留服务端游标，每次最多线性累积 256 项；等待该目录 channel 时不会持有主 SFTP 连接锁，因此元数据和文件操作可以与枚举并发。WinFsp 与 FUSE 会立即返回已取得的分页，在同一目录句柄内保持稳定顺序，并在关闭时释放未完成游标，WinFsp 的续页 marker 也使用常数时间索引。目录枚举开始后，Explorer 对 `desktop.ini` 等未知名称的探测会直接使用当前目录名称视图，既不扫描完整父目录，也不逐个发出串行 SFTP 元数据请求；目录未变化时，同一 WinFsp 句柄重复从头枚举会重放稳定快照并继续已有远端游标，本进程成功创建、删除或改名后则会刷新快照。WinFsp 卷信息回调会立即返回缓存或兼容容量，并在后台异步刷新 SFTP `statvfs` 或 WebDAV 配额数据；FUSE 挂载仍会缓存并报告远端容量。根目录不再异步预取，避免预取任务先占用串行 SFTP 连接、反而阻塞前台浏览请求。不允许第二个 SFTP channel 的服务器，以及 FTP 与 WebDAV，仍使用兼容的完整目录列表回退。FTP 使用 `CWD` 校验映射根目录，避免为了根元数据读取完整列表。每个打开文件还会进行 1 MiB 顺序预读；创建、写入、截断、重命名和删除会更新或失效相关缓存，跨句柄写入也会使旧预读数据失效。
+共享 VFS 层对 FTP、SFTP 和 WebDAV 启用了有界短期缓存：元数据和完整目录列表缓存 30 秒、未找到结果缓存 3 秒，最多保留 4096 项。SFTP 目录枚举会在专用 channel 上保留服务端游标，每次最多线性累积 256 项；等待该目录 channel 时不会持有主 SFTP 连接锁，因此元数据和文件操作可以与枚举并发。WinFsp 与 FUSE 会立即返回已取得的分页，在同一目录句柄内保持稳定顺序，并在关闭时释放未完成游标，WinFsp 的续页 marker 也使用常数时间索引。目录枚举开始后，Explorer 对 `desktop.ini` 等未知名称的探测会直接使用当前目录名称视图，既不扫描完整父目录，也不逐个发出串行 SFTP 元数据请求；WinFsp 只有在目录完整枚举后才用名称索引直接否定查找，分页尚未完成时会回退远端元数据查询，首批结果之外的现有文件仍可正常打开。目录未变化时，同一 WinFsp 句柄重复从头枚举会重放稳定快照并继续已有远端游标，本进程成功创建、删除或改名后则会刷新快照。WinFsp 卷信息回调会立即返回缓存或兼容容量，并在后台异步刷新 SFTP `statvfs` 或 WebDAV 配额数据；FUSE 挂载仍会缓存并报告远端容量。根目录不再异步预取，避免预取任务先占用串行 SFTP 连接、反而阻塞前台浏览请求。不允许第二个 SFTP channel 的服务器，以及 FTP 与 WebDAV，仍使用兼容的完整目录列表回退。FTP 使用 `CWD` 校验映射根目录，避免为了根元数据读取完整列表。每个打开文件还会进行 1 MiB 顺序预读；创建、写入、截断、重命名和删除会更新或失效相关缓存，跨句柄写入也会使旧预读数据失效。
 
 每个已挂载映射最多同时执行 8 个远程操作；控制请求超时为 30 秒，文件传输超时为 120 秒。读取、写入、截断、时间戳、刷新和连接建立遇到瞬时故障时，会在短暂退避后重试一次。FTP 会先丢弃失败或超时的会话，SFTP 会重建 SFTP session 或 SSH 连接，WebDAV 则使用 HTTP 客户端连接池。创建、删除和重命名在结果不确定时不会自动重放，因为第一次请求可能已经在远端生效。
 
@@ -180,7 +180,7 @@ GugleFS 运行期间会创建固定且不含敏感信息的 `session-running` �
 
 推送到 `main` 后，GitHub Actions 会在 Windows、Ubuntu 和 macOS 上分别执行格式检查、Clippy、Rust 测试和前端生产构建。平台原生测试会让 WinFsp 与 FUSE 回调层分别运行同一套内存远端场景，覆盖创建、目录列表、范围读写、重命名、截断、刷写、删除、句柄路径更新和文件系统错误映射，无需实际挂载。独立的 Ubuntu 门禁还会用允许完整文件系统变更操作的显式启动配置运行隔离 Pure-FTPd 与 OpenSSH/SFTP 容器，等待端口就绪后使用专用非 root 测试账号和临时 home 目录验证真实协议行为，成功后才允许开始打包。Actions 自身使用兼容 Node 24 的运行时，GugleFS 构建环境仍固定为 Node 22。随后 CI 创建 `<version>+build.<run_number>` 预发布，产物包括 Windows x64 NSIS、Linux x64 DEB/AppImage 和 macOS ARM64 App/DMG；正式 GitHub Release 会采用 release tag 作为应用版本。
 
-当前源代码版本线为 `0.12.0`，对应的用户可见变更记录在 [CHANGES.md](CHANGES.md) 和 [CHANGES.zh_CN.md](CHANGES.zh_CN.md) 中。
+当前源代码版本线为 `0.16.2`，对应的用户可见变更记录在 [CHANGES.md](CHANGES.md) 和 [CHANGES.zh_CN.md](CHANGES.zh_CN.md) 中。
 
 Windows 安装包内置 WinFsp 运行时，macOS 包内置已校验的官方 FUSE-T 安装器、许可证和第三方归属声明。macOS 工作流支持通过 `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD` 和 `APPLE_TEAM_ID` secrets 完成签名与公证；确认凭据有效后还需设置仓库变量 `APPLE_SIGNING_ENABLED=true` 才会启用签名，否则生成未签名产物。Linux 和 Windows 代码签名仍需配置对应签名密钥。
 

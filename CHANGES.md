@@ -4,6 +4,10 @@ All notable changes to GugleFS are documented here. Release descriptions use the
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-08-03
+
+- Fixed WinFsp opens for files outside the first directory page by falling back to remote metadata while a paged enumeration is incomplete; editors no longer receive `EIO` for existing files in large directories.
+
 ## [0.16.1] - 2026-08-03
 
 - Added a workspace security switch for startup and lock TOTP verification. Disabling it requires the current code; disabled mode provides direct unlock at startup and after locking.

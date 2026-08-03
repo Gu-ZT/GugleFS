@@ -83,7 +83,7 @@ impl SystemMountDriver {
 struct MountContext {
     vfs: Arc<DynamicVfs>,
     runtime: Handle,
-    known_names: RwLock<HashMap<String, HashMap<String, Vec<String>>>>,
+    known_names: RwLock<HashMap<String, KnownDirectoryNames>>,
     volume_space: RwLock<Option<CachedVolumeSpace>>,
     volume_space_refresh: Mutex<Option<JoinHandle<()>>>,
 }
@@ -123,6 +123,12 @@ enum IndexedWindowsName {
     Unindexed,
     Missing,
     Found(String),
+}
+
+#[derive(Default)]
+struct KnownDirectoryNames {
+    names: HashMap<String, Vec<String>>,
+    complete: bool,
 }
 
 struct MountCallbacks {
@@ -208,7 +214,7 @@ impl MountContext {
         let release = self.block_on(self.vfs.release_dir(handle));
         match (entries, release) {
             (Ok(entries), Ok(())) => {
-                self.remember_directory_entries(path, &entries)?;
+                self.remember_directory_entries(path, &entries, true)?;
                 Ok(entries)
             }
             (Err(error), _) | (_, Err(error)) => Err(error),
@@ -219,15 +225,17 @@ impl MountContext {
         &self,
         directory: &str,
         entries: &[DirectoryEntry],
+        complete: bool,
     ) -> Result<(), NTSTATUS> {
         let mut directories = self
             .known_names
             .write()
             .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
-        let names = directories.entry(directory.into()).or_default();
+        let known = directories.entry(directory.into()).or_default();
         for entry in entries {
-            remember_windows_name(names, &entry.name);
+            remember_windows_name(&mut known.names, &entry.name);
         }
+        known.complete |= complete;
         Ok(())
     }
 
@@ -248,7 +256,10 @@ impl MountContext {
             .known_names
             .write()
             .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
-        remember_windows_name(directories.entry(parent.into()).or_default(), name);
+        remember_windows_name(
+            &mut directories.entry(parent.into()).or_default().names,
+            name,
+        );
         Ok(())
     }
 
@@ -260,12 +271,12 @@ impl MountContext {
             .known_names
             .write()
             .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
-        if let Some(names) = directories.get_mut(parent) {
+        if let Some(known) = directories.get_mut(parent) {
             let key = windows_name_key(name);
-            if let Some(candidates) = names.get_mut(&key) {
+            if let Some(candidates) = known.names.get_mut(&key) {
                 candidates.retain(|candidate| candidate != name);
                 if candidates.is_empty() {
-                    names.remove(&key);
+                    known.names.remove(&key);
                 }
             }
         }
@@ -281,11 +292,15 @@ impl MountContext {
             .known_names
             .read()
             .map_err(|_| STATUS_IO_DEVICE_ERROR)?;
-        let Some(names) = directories.get(directory) else {
+        let Some(known) = directories.get(directory) else {
             return Ok(IndexedWindowsName::Unindexed);
         };
-        let Some(candidates) = names.get(&windows_name_key(requested)) else {
-            return Ok(IndexedWindowsName::Missing);
+        let Some(candidates) = known.names.get(&windows_name_key(requested)) else {
+            return Ok(if known.complete {
+                IndexedWindowsName::Missing
+            } else {
+                IndexedWindowsName::Unindexed
+            });
         };
         if let Some(exact) = candidates.iter().find(|candidate| *candidate == requested) {
             return Ok(IndexedWindowsName::Found(exact.clone()));
@@ -314,6 +329,16 @@ impl MountContext {
         }
         self.metadata(&resolved)?;
         Ok(resolved)
+    }
+
+    fn mark_directory_complete(&self, directory: &str) -> Result<(), NTSTATUS> {
+        self.known_names
+            .write()
+            .map_err(|_| STATUS_IO_DEVICE_ERROR)?
+            .entry(directory.into())
+            .or_default()
+            .complete = true;
+        Ok(())
     }
 
     fn resolve_new_path(&self, requested: &str) -> Result<String, NTSTATUS> {
@@ -806,9 +831,11 @@ impl FileSystemInterface for MountCallbacks {
                     .vfs
                     .readdir_page(handle, DIRECTORY_PAGE_SIZE),
             )?;
-            let _ = file_context
-                .mount
-                .remember_directory_entries(&directory_path, &page.entries);
+            let _ = file_context.mount.remember_directory_entries(
+                &directory_path,
+                &page.entries,
+                false,
+            );
             let mut snapshot = file_context
                 .directory_snapshot
                 .lock()
@@ -824,6 +851,9 @@ impl FileSystemInterface for MountCallbacks {
                 }
             }
             snapshot.complete = !page.has_more;
+            if snapshot.complete {
+                let _ = file_context.mount.mark_directory_complete(&directory_path);
+            }
         }
     }
 
@@ -1260,6 +1290,9 @@ mod tests {
             if path == "/" {
                 return Ok(metadata(EntryKind::Directory));
             }
+            if path == "/late-file.txt" {
+                return Ok(metadata(EntryKind::File));
+            }
             let exists = path
                 .strip_prefix("/file-")
                 .and_then(|value| value.strip_suffix(".txt"))
@@ -1662,12 +1695,23 @@ mod tests {
         assert_eq!(remote.page_reads.load(Ordering::Relaxed), 1);
         let metadata_reads = remote.metadata_reads.load(Ordering::Relaxed);
         assert_eq!(
+            callbacks
+                .mount
+                .resolve_existing_path("/late-file.txt")
+                .unwrap(),
+            "/late-file.txt"
+        );
+        assert_eq!(
+            remote.metadata_reads.load(Ordering::Relaxed),
+            metadata_reads + 1
+        );
+        assert_eq!(
             callbacks.mount.resolve_existing_path("/thumbs.db"),
             Err(STATUS_OBJECT_NAME_NOT_FOUND)
         );
         assert_eq!(
             remote.metadata_reads.load(Ordering::Relaxed),
-            metadata_reads
+            metadata_reads + 2
         );
         assert_eq!(
             callbacks
