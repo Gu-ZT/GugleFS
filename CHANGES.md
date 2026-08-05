@@ -2,11 +2,11 @@
 
 All notable changes to GugleFS are documented here. Release descriptions use the section matching the application version.
 
-## [Unreleased]
-
-## [0.16.2] - 2026-08-03
+## [0.16.2] - 2026-08-05
 
 - Fixed WinFsp opens for files outside the first directory page by falling back to remote metadata while a paged enumeration is incomplete; editors no longer receive `EIO` for existing files in large directories.
+
+- Fixed overwriting existing files on SFTP servers that reject path-based `SETSTAT` truncation by using the standard write-and-truncate open operation and verifying the resulting length.
 
 ## [0.16.1] - 2026-08-03
 

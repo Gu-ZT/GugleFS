@@ -66,6 +66,19 @@ async fn exercise_remote(remote: &dyn RemoteFileSystem, protocol: &str) {
         b"hello remote"
     );
     assert_eq!(remote.metadata(&original).await.unwrap().size, 12);
+
+    remote.truncate(&original, 0).await.unwrap();
+    assert_eq!(
+        remote
+            .write(&original, 0, b"replacement".to_vec())
+            .await
+            .unwrap(),
+        11
+    );
+    assert_eq!(
+        remote.read_range(&original, 0, 64).await.unwrap(),
+        b"replacement"
+    );
     assert!(remote
         .read_dir(&directory)
         .await
@@ -75,7 +88,7 @@ async fn exercise_remote(remote: &dyn RemoteFileSystem, protocol: &str) {
 
     remote.rename(&original, &renamed).await.unwrap();
     remote.truncate(&renamed, 5).await.unwrap();
-    assert_eq!(remote.read_range(&renamed, 0, 64).await.unwrap(), b"hello");
+    assert_eq!(remote.read_range(&renamed, 0, 64).await.unwrap(), b"repla");
     remote.flush(&renamed).await.unwrap();
     remote.remove(&renamed, false).await.unwrap();
     remote.remove(&directory, true).await.unwrap();

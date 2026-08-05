@@ -961,9 +961,25 @@ impl RemoteFileSystem for SftpFileSystem {
         self.execute("truncate", true, move |sftp| {
             let remote_path = remote_path.clone();
             Box::pin(async move {
-                let mut attributes = FileAttributes::empty();
-                attributes.size = Some(size);
-                sftp.set_metadata(&remote_path, attributes).await?;
+                let current_size = sftp
+                    .metadata(remote_path.clone())
+                    .await?
+                    .size
+                    .unwrap_or_default();
+                if current_size == size {
+                    return Ok(());
+                }
+
+                if size == 0 {
+                    let mut file = sftp
+                        .open_with_flags(remote_path.clone(), OpenFlags::WRITE | OpenFlags::TRUNCATE)
+                        .await?;
+                    file.shutdown().await.map_err(SftpError::from)?;
+                } else {
+                    let mut attributes = FileAttributes::empty();
+                    attributes.size = Some(size);
+                    sftp.set_metadata(&remote_path, attributes).await?;
+                }
                 let actual_size = sftp.metadata(remote_path).await?.size.unwrap_or_default();
                 if actual_size != size {
                     return Err(SftpError::UnexpectedBehavior(format!(
